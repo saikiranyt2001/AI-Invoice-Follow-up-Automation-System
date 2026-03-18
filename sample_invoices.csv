@@ -1,0 +1,4 @@
+customer_name,customer_email,amount,due_date
+Acme Corp,accounts@acme.com,1250.00,2026-02-28
+Northwind Ltd,billing@northwind.com,890.50,2026-03-05
+Blue Peak Finance,ap@bluepeak.com,450.00,2026-04-02
