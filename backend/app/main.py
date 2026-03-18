@@ -6,6 +6,8 @@ import csv
 import random
 import base64
 import secrets
+import logging
+from html import escape
 from urllib.parse import urlencode
 
 import httpx
@@ -62,6 +64,7 @@ from app.services import (
 
 Base.metadata.create_all(bind=engine)
 run_lightweight_migrations()
+logger = logging.getLogger(__name__)
 
 
 async def _automation_loop() -> None:
@@ -74,7 +77,7 @@ async def _automation_loop() -> None:
             try:
                 run_automation_cycle(db)
             except Exception:
-                pass
+                logger.exception("Automation cycle failed")
             finally:
                 db.close()
 
@@ -837,8 +840,13 @@ def payment_checkout_page(token: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Payment token not found")
 
     status_text = "PAID" if invoice.status == InvoiceStatus.PAID else "PENDING"
+    customer_name = escape(invoice.customer_name)
+    safe_status = escape(status_text)
+    safe_token = escape(token)
+    safe_paid_at = escape(str(invoice.paid_at)) if invoice.paid_at else ""
+    safe_payment_reference = escape(invoice.payment_reference or "")
     paid_notice = (
-        f"<p><strong>Paid at:</strong> {invoice.paid_at}</p><p><strong>Reference:</strong> {invoice.payment_reference}</p>"
+        f"<p><strong>Paid at:</strong> {safe_paid_at}</p><p><strong>Reference:</strong> {safe_payment_reference}</p>"
         if invoice.status == InvoiceStatus.PAID
         else ""
     )
@@ -848,11 +856,11 @@ def payment_checkout_page(token: str, db: Session = Depends(get_db)):
       <head><title>Invoice Payment</title></head>
       <body style='font-family: Arial, sans-serif; max-width: 680px; margin: 24px auto; padding: 16px;'>
         <h2>Invoice #{invoice.id} Payment</h2>
-        <p><strong>Customer:</strong> {invoice.customer_name}</p>
+        <p><strong>Customer:</strong> {customer_name}</p>
         <p><strong>Amount:</strong> ${invoice.amount:,.2f}</p>
-        <p><strong>Status:</strong> {status_text}</p>
+        <p><strong>Status:</strong> {safe_status}</p>
         {paid_notice}
-        <form method='post' action='/payments/confirm-form/{token}'>
+        <form method='post' action='/payments/confirm-form/{safe_token}'>
           <label>Payment Reference:</label><br/>
           <input name='payment_reference' value='DEMO-{invoice.id}' style='padding:8px; width: 260px; margin-top: 6px;' required />
           <br/><br/>
@@ -869,11 +877,21 @@ def confirm_payment_form(token: str, payment_reference: str = Form(...), db: Ses
     if not invoice:
         raise HTTPException(status_code=404, detail="Payment token not found")
 
+    if invoice.status == InvoiceStatus.PAID:
+        paid_reference = escape(invoice.payment_reference or "")
+        return (
+            "<html><body style='font-family: Arial, sans-serif; max-width:680px; margin: 24px auto;'>"
+            "<h3>Payment was already recorded.</h3>"
+            f"<p>Invoice #{invoice.id} remains paid with reference <strong>{paid_reference}</strong>.</p>"
+            "</body></html>"
+        )
+
     mark_invoice_paid(db, invoice, payment_reference)
+    safe_reference = escape(invoice.payment_reference or "")
     return (
         "<html><body style='font-family: Arial, sans-serif; max-width:680px; margin: 24px auto;'>"
         "<h3>Payment recorded successfully.</h3>"
-        f"<p>Invoice #{invoice.id} is now marked as paid with reference <strong>{invoice.payment_reference}</strong>.</p>"
+        f"<p>Invoice #{invoice.id} is now marked as paid with reference <strong>{safe_reference}</strong>.</p>"
         "</body></html>"
     )
 

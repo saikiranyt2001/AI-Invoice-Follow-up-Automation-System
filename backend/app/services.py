@@ -47,6 +47,9 @@ def build_payment_link_by_token(token: str) -> str:
 
 
 def mark_invoice_paid(db: Session, invoice: Invoice, payment_reference: str) -> Invoice:
+    if invoice.status == InvoiceStatus.PAID:
+        return invoice
+
     invoice.status = InvoiceStatus.PAID
     invoice.payment_reference = payment_reference.strip()
     invoice.paid_at = datetime.utcnow()
