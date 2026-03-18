@@ -1,18 +1,27 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from io import StringIO
 import csv
 import random
 import base64
 import secrets
 import logging
+import json
+from collections import defaultdict, deque
 from html import escape
 from urllib.parse import urlencode
+from typing import Any
 
 import httpx
+try:
+    import redis as redis_lib
+except Exception:  # pragma: no cover
+    redis_lib = None
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi.security import HTTPAuthorizationCredentials
+from fastapi.responses import JSONResponse
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select
@@ -20,8 +29,24 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine, get_db, run_lightweight_migrations
-from app.models import Company, CompanyMembership, EmailStatus, IntegrationConnection, Invoice, InvoiceStatus, ReminderEmail, User, UserRole
+from app.models import (
+    AuditLog,
+    Company,
+    CompanyMembership,
+    EmailStatus,
+    IntegrationConnection,
+    Invoice,
+    InvoiceStatus,
+    JobQueue,
+    RefreshToken,
+    ReminderEmail,
+    RevokedAccessToken,
+    User,
+    UserRole,
+    WebhookEvent,
+)
 from app.schemas import (
+    AuditLogOut,
     CompanyCreate,
     CompanyInviteRequest,
     CompanyMemberRemoveRequest,
@@ -40,17 +65,39 @@ from app.schemas import (
     InvoiceOut,
     InvoiceStatusUpdate,
     LatePayerInsight,
+    OpsMetricsOut,
     PaymentConfirmRequest,
+    PaymentWebhookIn,
+    QueueStatsOut,
     ReminderEmailOut,
     ReminderEmailUpdate,
     SendEmailRequest,
     TeamMemberCreate,
     TokenOut,
+    TokenRefreshRequest,
+    LogoutRequest,
+    MfaEnableRequest,
+    MfaSetupOut,
     UserCreate,
     UserLogin,
+    JobQueueOut,
     UserOut,
+    EmailStatusWebhookIn,
+    WebhookAckOut,
 )
-from app.security import create_access_token, get_current_user, hash_password, require_admin, verify_password
+from app.security import (
+    create_access_token,
+    decode_access_token,
+    generate_mfa_secret,
+    get_current_user,
+    hash_password,
+    hash_refresh_token,
+    refresh_token_raw,
+    require_admin,
+    verify_password,
+    verify_totp,
+    bearer_scheme,
+)
 from app.services import (
     build_payment_link,
     create_pending_reminder,
@@ -65,23 +112,215 @@ from app.services import (
 Base.metadata.create_all(bind=engine)
 run_lightweight_migrations()
 logger = logging.getLogger(__name__)
+_RATE_LIMIT_BUCKETS: dict[str, deque[float]] = defaultdict(deque)
+_AUTH_RATE_LIMIT_PATHS = {"/auth/login", "/auth/signup"}
+_REDIS_CLIENT: Any = None
+
+
+def _prune_bucket(bucket: deque[float], now: float, window_seconds: int) -> None:
+    cutoff = now - window_seconds
+    while bucket and bucket[0] < cutoff:
+        bucket.popleft()
+
+
+def _get_redis_client() -> Any:
+    global _REDIS_CLIENT
+    settings = get_settings()
+    if _REDIS_CLIENT is not None:
+        return _REDIS_CLIENT
+    if not settings.redis_url or redis_lib is None:
+        _REDIS_CLIENT = False
+        return _REDIS_CLIENT
+    try:
+        client = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True)
+        client.ping()
+        _REDIS_CLIENT = client
+        return _REDIS_CLIENT
+    except Exception:
+        _REDIS_CLIENT = False
+        return _REDIS_CLIENT
+
+
+def _issue_auth_tokens(db: Session, user: User) -> TokenOut:
+    access_token = create_access_token(user.email)
+    refresh_raw = refresh_token_raw()
+    expires_at = datetime.utcnow() + timedelta(days=max(1, get_settings().auth_refresh_token_days))
+    db.add(
+        RefreshToken(
+            user_id=user.id,
+            token_hash=hash_refresh_token(refresh_raw),
+            expires_at=expires_at,
+            revoked=0,
+        )
+    )
+    db.commit()
+    return TokenOut(access_token=access_token, refresh_token=refresh_raw, user=user)
+
+
+def _record_audit_event(
+    db: Session,
+    *,
+    action: str,
+    entity_type: str,
+    user_id: int | None,
+    company_id: int | None,
+    entity_id: int | None = None,
+    details: dict[str, object] | None = None,
+) -> None:
+    event = AuditLog(
+        action=action,
+        entity_type=entity_type,
+        user_id=user_id,
+        company_id=company_id,
+        entity_id=entity_id,
+        details_json=json.dumps(details or {}),
+    )
+    db.add(event)
+    db.commit()
+
+
+def _webhook_secret_valid(secret_header: str | None) -> bool:
+    expected = get_settings().webhook_shared_secret.strip()
+    if not expected:
+        return True
+    return bool(secret_header and secret_header == expected)
+
+
+def _register_webhook_event(
+    db: Session,
+    *,
+    source: str,
+    event_type: str,
+    event_key: str,
+    payload: dict[str, object],
+) -> tuple[WebhookEvent, bool]:
+    existing = db.scalar(select(WebhookEvent).where(WebhookEvent.event_key == event_key))
+    if existing:
+        return existing, True
+
+    event = WebhookEvent(
+        source=source,
+        event_type=event_type,
+        event_key=event_key,
+        payload_json=json.dumps(payload),
+        processed=1,
+    )
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+    return event, False
+
+
+def _enqueue_job(
+    db: Session,
+    *,
+    job_type: str,
+    payload: dict[str, object],
+    company_id: int | None,
+    user_id: int | None,
+    available_at: datetime | None = None,
+    max_attempts: int = 3,
+) -> JobQueue:
+    job = JobQueue(
+        company_id=company_id,
+        user_id=user_id,
+        job_type=job_type,
+        payload_json=json.dumps(payload),
+        status="queued",
+        attempts=0,
+        max_attempts=max(1, max_attempts),
+        available_at=available_at or datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def _process_queued_jobs(db: Session, limit: int = 10) -> dict[str, int]:
+    now = datetime.utcnow()
+    jobs = db.scalars(
+        select(JobQueue)
+        .where(
+            JobQueue.status == "queued",
+            JobQueue.available_at <= now,
+        )
+        .order_by(JobQueue.created_at.asc(), JobQueue.id.asc())
+        .limit(max(1, limit))
+    ).all()
+
+    summary = {"picked": len(jobs), "succeeded": 0, "failed": 0, "requeued": 0}
+    for job in jobs:
+        job.status = "processing"
+        job.updated_at = datetime.utcnow()
+        db.commit()
+
+        try:
+            payload = json.loads(job.payload_json or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+
+        try:
+            if job.job_type == "send_reminder_email":
+                reminder_id = int(payload.get("reminder_id", 0))
+                provider = str(payload.get("provider", "smtp"))
+                reminder = db.get(ReminderEmail, reminder_id)
+                if not reminder:
+                    raise RuntimeError(f"Reminder not found: {reminder_id}")
+                send_reminder_email(db, reminder, provider)
+            elif job.job_type == "automation_cycle":
+                run_automation_cycle(db)
+            else:
+                raise RuntimeError(f"Unsupported job type: {job.job_type}")
+
+            job.status = "succeeded"
+            job.last_error = None
+            summary["succeeded"] += 1
+        except Exception as exc:
+            job.attempts = int(job.attempts or 0) + 1
+            job.last_error = str(exc)
+            if job.attempts < job.max_attempts:
+                job.status = "queued"
+                job.available_at = datetime.utcnow() + timedelta(seconds=20)
+                summary["requeued"] += 1
+            else:
+                job.status = "failed"
+                summary["failed"] += 1
+            logger.exception("Queue job failed: id=%s type=%s", job.id, job.job_type)
+        finally:
+            job.updated_at = datetime.utcnow()
+            db.commit()
+
+    return summary
 
 
 async def _automation_loop() -> None:
     settings = get_settings()
     interval_seconds = max(1, settings.automation_interval_minutes) * 60
+    next_automation_run = datetime.utcnow()
 
     while True:
-        if settings.automation_enabled:
-            db = SessionLocal()
-            try:
-                run_automation_cycle(db)
-            except Exception:
-                logger.exception("Automation cycle failed")
-            finally:
-                db.close()
+        db = SessionLocal()
+        try:
+            now = datetime.utcnow()
+            if settings.automation_enabled and now >= next_automation_run:
+                _enqueue_job(
+                    db,
+                    job_type="automation_cycle",
+                    payload={},
+                    company_id=None,
+                    user_id=None,
+                    max_attempts=2,
+                )
+                next_automation_run = now + timedelta(seconds=interval_seconds)
+            _process_queued_jobs(db, limit=15)
+        except Exception:
+            logger.exception("Automation/queue loop failed")
+        finally:
+            db.close()
 
-        await asyncio.sleep(interval_seconds)
+        await asyncio.sleep(5)
 
 
 @asynccontextmanager
@@ -108,12 +347,48 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    settings = get_settings()
+    if request.url.path == "/health":
+        return await call_next(request)
+
+    window_seconds = max(1, settings.rate_limit_window_seconds)
+    max_requests = settings.auth_rate_limit_requests if request.url.path in _AUTH_RATE_LIMIT_PATHS else settings.rate_limit_requests
+    max_requests = max(1, max_requests)
+    client_ip = request.client.host if request.client else "unknown"
+    key = f"{client_ip}:{request.url.path in _AUTH_RATE_LIMIT_PATHS}"
+
+    redis_client = _get_redis_client()
+    if redis_client:
+        redis_key = f"rl:{key}"
+        try:
+            count = redis_client.incr(redis_key)
+            if count == 1:
+                redis_client.expire(redis_key, window_seconds)
+            if count > max_requests:
+                return JSONResponse(status_code=429, content={"detail": "Too many requests. Please retry later."})
+        except Exception:
+            redis_client = False
+
+    if not redis_client:
+        now = asyncio.get_running_loop().time()
+        bucket = _RATE_LIMIT_BUCKETS[key]
+        _prune_bucket(bucket, now, window_seconds)
+        if len(bucket) >= max_requests:
+            return JSONResponse(status_code=429, content={"detail": "Too many requests. Please retry later."})
+        bucket.append(now)
+
+    return await call_next(request)
+
+
 def invoice_to_out(invoice: Invoice, db: Session) -> InvoiceOut:
     ensure_payment_token(db, invoice)
     return InvoiceOut(
         id=invoice.id,
         customer_name=invoice.customer_name,
         customer_email=invoice.customer_email,
+        customer_phone=invoice.customer_phone,
         amount=invoice.amount,
         due_date=invoice.due_date,
         status=invoice.status,
@@ -309,13 +584,77 @@ def health() -> dict[str, str]:
 
 @app.post("/automation/run-now")
 def automation_run_now(db: Session = Depends(get_db), _: User = Depends(require_admin)):
-    return run_automation_cycle(db)
+    _enqueue_job(
+        db,
+        job_type="automation_cycle",
+        payload={},
+        company_id=None,
+        user_id=None,
+        max_attempts=2,
+    )
+    summary = _process_queued_jobs(db, limit=5)
+    return {"enqueued": 1, "queue_summary": summary}
 
 
 @app.get("/emails/track/open/{token}.gif")
 def track_email_open(token: str, db: Session = Depends(get_db)):
     mark_email_opened(db, token)
     return Response(content=TRACKING_GIF, media_type="image/gif")
+
+
+@app.post("/webhooks/email/status", response_model=WebhookAckOut)
+def email_status_webhook(
+    payload: EmailStatusWebhookIn,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    if not _webhook_secret_valid(request.headers.get("X-Webhook-Secret")):
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
+
+    event, duplicate = _register_webhook_event(
+        db,
+        source=payload.source,
+        event_type=f"email_{payload.status}",
+        event_key=payload.idempotency_key,
+        payload=payload.model_dump(),
+    )
+    if duplicate:
+        return WebhookAckOut(accepted=True, duplicate=True, event_key=event.event_key)
+
+    reminder: ReminderEmail | None = None
+    if payload.provider_message_id:
+        reminder = db.scalar(
+            select(ReminderEmail).where(ReminderEmail.provider_message_id == payload.provider_message_id)
+        )
+    if not reminder and payload.tracking_token:
+        reminder = db.scalar(
+            select(ReminderEmail).where(ReminderEmail.tracking_token == payload.tracking_token)
+        )
+
+    if reminder:
+        if payload.status == "delivered":
+            reminder.status = EmailStatus.DELIVERED
+            reminder.delivered_at = datetime.utcnow()
+        elif payload.status == "opened":
+            reminder.status = EmailStatus.OPENED
+            if reminder.opened_at is None:
+                reminder.opened_at = datetime.utcnow()
+        elif payload.status == "failed":
+            reminder.status = EmailStatus.FAILED
+            reminder.failure_reason = payload.error_message or "Provider reported failure"
+        db.commit()
+        db.refresh(reminder)
+        _record_audit_event(
+            db,
+            action="email_status_webhook_applied",
+            entity_type="reminder_email",
+            entity_id=reminder.id,
+            user_id=None,
+            company_id=reminder.company_id,
+            details={"status": payload.status, "source": payload.source},
+        )
+
+    return WebhookAckOut(accepted=True, duplicate=False, event_key=event.event_key)
 
 
 @app.post("/auth/signup", response_model=TokenOut)
@@ -344,8 +683,7 @@ def signup(payload: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
 
-    token = create_access_token(user.email)
-    return TokenOut(access_token=token, user=user)
+    return _issue_auth_tokens(db, user)
 
 
 @app.post("/auth/login", response_model=TokenOut)
@@ -354,8 +692,99 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    token = create_access_token(user.email)
-    return TokenOut(access_token=token, user=user)
+    if bool(user.mfa_enabled):
+        if not payload.otp_code or not user.mfa_secret or not verify_totp(user.mfa_secret, payload.otp_code):
+            raise HTTPException(status_code=401, detail="MFA code required or invalid")
+
+    return _issue_auth_tokens(db, user)
+
+
+@app.post("/auth/refresh", response_model=TokenOut)
+def refresh_access_token(payload: TokenRefreshRequest, db: Session = Depends(get_db)):
+    token_hash = hash_refresh_token(payload.refresh_token)
+    row = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
+    if not row or bool(row.revoked) or row.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+
+    user = db.get(User, row.user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    row.revoked = 1
+    db.commit()
+    return _issue_auth_tokens(db, user)
+
+
+@app.post("/auth/logout")
+def logout(
+    payload: LogoutRequest,
+    db: Session = Depends(get_db),
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+):
+    if credentials and credentials.scheme.lower() == "bearer":
+        decoded = decode_access_token(credentials.credentials)
+        jti = str(decoded.get("jti") or "")
+        exp_raw = decoded.get("exp")
+        if jti and exp_raw:
+            expires_at = datetime.fromtimestamp(int(exp_raw), tz=timezone.utc).replace(tzinfo=None)
+            existing = db.scalar(select(RevokedAccessToken).where(RevokedAccessToken.jti == jti))
+            if not existing:
+                db.add(RevokedAccessToken(jti=jti, expires_at=expires_at))
+                db.commit()
+
+    if payload.refresh_token:
+        token_hash = hash_refresh_token(payload.refresh_token)
+        row = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
+        if row and not bool(row.revoked):
+            row.revoked = 1
+            db.commit()
+
+    return {"ok": True}
+
+
+@app.post("/auth/logout-all")
+def logout_all(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    tokens = db.scalars(
+        select(RefreshToken).where(RefreshToken.user_id == current_user.id, RefreshToken.revoked == 0)
+    ).all()
+    for row in tokens:
+        row.revoked = 1
+    db.commit()
+    return {"ok": True, "revoked_refresh_tokens": len(tokens)}
+
+
+@app.post("/auth/mfa/setup", response_model=MfaSetupOut)
+def setup_mfa(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    secret = generate_mfa_secret()
+    current_user.mfa_secret = secret
+    current_user.mfa_enabled = 0
+    db.commit()
+    db.refresh(current_user)
+    uri = f"otpauth://totp/InvoiceAutomation:{current_user.email}?secret={secret}&issuer=InvoiceAutomation"
+    return MfaSetupOut(secret=secret, otpauth_uri=uri)
+
+
+@app.post("/auth/mfa/enable")
+def enable_mfa(payload: MfaEnableRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not current_user.mfa_secret:
+        raise HTTPException(status_code=400, detail="MFA is not initialized")
+    if not verify_totp(current_user.mfa_secret, payload.otp_code):
+        raise HTTPException(status_code=400, detail="Invalid OTP code")
+    current_user.mfa_enabled = 1
+    db.commit()
+    return {"ok": True, "mfa_enabled": True}
+
+
+@app.post("/auth/mfa/disable")
+def disable_mfa(payload: MfaEnableRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not current_user.mfa_secret or not bool(current_user.mfa_enabled):
+        return {"ok": True, "mfa_enabled": False}
+    if not verify_totp(current_user.mfa_secret, payload.otp_code):
+        raise HTTPException(status_code=400, detail="Invalid OTP code")
+    current_user.mfa_enabled = 0
+    current_user.mfa_secret = None
+    db.commit()
+    return {"ok": True, "mfa_enabled": False}
 
 
 @app.get("/auth/me", response_model=UserOut)
@@ -383,6 +812,15 @@ def create_company(
     db.add(CompanyMembership(company_id=company.id, user_id=current_user.id))
     db.commit()
     db.refresh(company)
+    _record_audit_event(
+        db,
+        action="company_created",
+        entity_type="company",
+        entity_id=company.id,
+        user_id=current_user.id,
+        company_id=company.id,
+        details={"name": company.name},
+    )
     return company
 
 
@@ -401,6 +839,15 @@ def switch_company(
     current_user.active_company_id = company.id
     db.commit()
     db.refresh(current_user)
+    _record_audit_event(
+        db,
+        action="company_switched",
+        entity_type="company",
+        entity_id=company.id,
+        user_id=current_user.id,
+        company_id=company.id,
+        details={"company_name": company.name},
+    )
     return current_user
 
 
@@ -430,6 +877,14 @@ def invite_existing_user_to_active_company(
 
     db.commit()
     db.refresh(invited_user)
+    _record_audit_event(
+        db,
+        action="company_member_invited",
+        entity_type="company_membership",
+        user_id=current_user.id,
+        company_id=active_company.id,
+        details={"invited_user_id": invited_user.id, "invited_email": invited_user.email},
+    )
     return invited_user
 
 
@@ -464,6 +919,14 @@ def remove_member_from_active_company(
         target_user.active_company_id = None
     db.commit()
     db.refresh(target_user)
+    _record_audit_event(
+        db,
+        action="company_member_removed",
+        entity_type="company_membership",
+        user_id=current_user.id,
+        company_id=active_company.id,
+        details={"removed_user_id": target_user.id, "removed_email": target_user.email},
+    )
     return target_user
 
 
@@ -499,6 +962,15 @@ def create_team_user(payload: TeamMemberCreate, db: Session = Depends(get_db), c
     user.active_company_id = active_company.id
     db.commit()
     db.refresh(user)
+    _record_audit_event(
+        db,
+        action="team_user_created",
+        entity_type="user",
+        entity_id=user.id,
+        user_id=current_user.id,
+        company_id=active_company.id,
+        details={"email": user.email, "role": user.role.value},
+    )
     return user
 
 
@@ -702,6 +1174,14 @@ def import_invoices_from_integration(
         created.append(invoice_to_out(invoice, db))
 
     db.commit()
+    _record_audit_event(
+        db,
+        action="integration_imported_invoices",
+        entity_type="integration",
+        user_id=current_user.id,
+        company_id=active_company.id,
+        details={"source": payload.source, "count": len(created)},
+    )
     return created
 
 
@@ -716,6 +1196,15 @@ def create_invoice(
     db.add(invoice)
     db.commit()
     db.refresh(invoice)
+    _record_audit_event(
+        db,
+        action="invoice_created",
+        entity_type="invoice",
+        entity_id=invoice.id,
+        user_id=current_user.id,
+        company_id=active_company.id,
+        details={"amount": invoice.amount, "due_date": invoice.due_date.isoformat()},
+    )
     return invoice_to_out(invoice, db)
 
 
@@ -747,6 +1236,7 @@ def upload_invoices_csv(
                 company_id=active_company.id,
                 customer_name=row["customer_name"].strip(),
                 customer_email=row["customer_email"].strip(),
+                customer_phone=(row.get("customer_phone") or "").strip() or None,
                 amount=float(row["amount"]),
                 due_date=date.fromisoformat(row["due_date"]),
             )
@@ -819,7 +1309,18 @@ def mark_invoice_paid_direct(
     if not invoice or invoice.company_id != active_company.id:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
+    was_paid = invoice.status == InvoiceStatus.PAID
     mark_invoice_paid(db, invoice, payload.payment_reference)
+    if not was_paid:
+        _record_audit_event(
+            db,
+            action="invoice_marked_paid",
+            entity_type="invoice",
+            entity_id=invoice.id,
+            user_id=current_user.id,
+            company_id=active_company.id,
+            details={"payment_reference": invoice.payment_reference or ""},
+        )
     return invoice_to_out(invoice, db)
 
 
@@ -831,6 +1332,49 @@ def confirm_payment_by_token(token: str, payload: PaymentConfirmRequest, db: Ses
 
     mark_invoice_paid(db, invoice, payload.payment_reference)
     return invoice_to_out(invoice, db)
+
+
+@app.post("/webhooks/payments/confirm", response_model=WebhookAckOut)
+def confirm_payment_webhook(
+    payload: PaymentWebhookIn,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    if not _webhook_secret_valid(request.headers.get("X-Webhook-Secret")):
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
+
+    event, duplicate = _register_webhook_event(
+        db,
+        source=payload.source,
+        event_type="payment_confirm",
+        event_key=payload.idempotency_key,
+        payload=payload.model_dump(),
+    )
+    if duplicate:
+        return WebhookAckOut(accepted=True, duplicate=True, event_key=event.event_key)
+
+    invoice: Invoice | None = None
+    if payload.invoice_id:
+        invoice = db.get(Invoice, payload.invoice_id)
+    if not invoice and payload.payment_token:
+        invoice = db.scalar(select(Invoice).where(Invoice.payment_token == payload.payment_token))
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found for webhook payment confirmation")
+
+    was_paid = invoice.status == InvoiceStatus.PAID
+    mark_invoice_paid(db, invoice, payload.payment_reference)
+    if not was_paid:
+        _record_audit_event(
+            db,
+            action="invoice_paid_via_webhook",
+            entity_type="invoice",
+            entity_id=invoice.id,
+            user_id=None,
+            company_id=invoice.company_id,
+            details={"source": payload.source, "payment_reference": payload.payment_reference},
+        )
+
+    return WebhookAckOut(accepted=True, duplicate=False, event_key=event.event_key)
 
 
 @app.get("/payments/pay/{token}", response_class=HTMLResponse)
@@ -911,6 +1455,15 @@ def generate_email(
         raise HTTPException(status_code=400, detail="Cannot generate reminder for a paid invoice")
 
     reminder = create_pending_reminder(db, invoice, payload.tone, current_user.id, active_company.id)
+    _record_audit_event(
+        db,
+        action="reminder_generated",
+        entity_type="reminder_email",
+        entity_id=reminder.id,
+        user_id=current_user.id,
+        company_id=active_company.id,
+        details={"invoice_id": invoice.id, "tone": payload.tone.value},
+    )
     return reminder
 
 
@@ -979,8 +1532,24 @@ def approve_email(
     reminder.status = EmailStatus.APPROVED
     db.commit()
     db.refresh(reminder)
-
-    return send_reminder_email(db, reminder, payload.provider)
+    job = _enqueue_job(
+        db,
+        job_type="send_reminder_email",
+        payload={"reminder_id": reminder.id, "provider": payload.provider},
+        company_id=active_company.id,
+        user_id=current_user.id,
+        max_attempts=3,
+    )
+    _record_audit_event(
+        db,
+        action="reminder_approved_and_queued",
+        entity_type="reminder_email",
+        entity_id=reminder.id,
+        user_id=current_user.id,
+        company_id=active_company.id,
+        details={"provider": payload.provider, "queue_job_id": job.id},
+    )
+    return reminder
 
 
 @app.post("/emails/{email_id}/send", response_model=ReminderEmailOut)
@@ -998,7 +1567,29 @@ def send_email_direct(
     if reminder.status not in {EmailStatus.PENDING_APPROVAL, EmailStatus.APPROVED, EmailStatus.FAILED}:
         raise HTTPException(status_code=400, detail="Email cannot be sent in current state")
 
-    return send_reminder_email(db, reminder, payload.provider)
+    if reminder.status == EmailStatus.PENDING_APPROVAL:
+        reminder.status = EmailStatus.APPROVED
+        db.commit()
+        db.refresh(reminder)
+
+    job = _enqueue_job(
+        db,
+        job_type="send_reminder_email",
+        payload={"reminder_id": reminder.id, "provider": payload.provider},
+        company_id=active_company.id,
+        user_id=current_user.id,
+        max_attempts=3,
+    )
+    _record_audit_event(
+        db,
+        action="reminder_send_queued",
+        entity_type="reminder_email",
+        entity_id=reminder.id,
+        user_id=current_user.id,
+        company_id=active_company.id,
+        details={"provider": payload.provider, "queue_job_id": job.id},
+    )
+    return reminder
 
 
 @app.post("/emails/{email_id}/reject", response_model=ReminderEmailOut)
@@ -1014,7 +1605,174 @@ def reject_email(email_id: int, db: Session = Depends(get_db), current_user: Use
     reminder.status = EmailStatus.REJECTED
     db.commit()
     db.refresh(reminder)
+    _record_audit_event(
+        db,
+        action="reminder_rejected",
+        entity_type="reminder_email",
+        entity_id=reminder.id,
+        user_id=current_user.id,
+        company_id=active_company.id,
+    )
     return reminder
+
+
+@app.get("/audit/logs", response_model=list[AuditLogOut])
+def list_audit_logs(
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    active_company = get_active_company(db, current_user)
+    safe_limit = min(200, max(1, limit))
+    logs = db.scalars(
+        select(AuditLog)
+        .where(AuditLog.company_id == active_company.id)
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .limit(safe_limit)
+    ).all()
+
+    out: list[AuditLogOut] = []
+    for log in logs:
+        try:
+            details = json.loads(log.details_json) if log.details_json else {}
+        except json.JSONDecodeError:
+            details = {}
+        out.append(
+            AuditLogOut(
+                id=log.id,
+                company_id=log.company_id,
+                user_id=log.user_id,
+                action=log.action,
+                entity_type=log.entity_type,
+                entity_id=log.entity_id,
+                details=details,
+                created_at=log.created_at,
+            )
+    )
+    return out
+
+
+@app.get("/jobs/queue", response_model=list[JobQueueOut])
+def list_queue_jobs(
+    limit: int = 100,
+    status: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    active_company = get_active_company(db, current_user)
+    safe_limit = min(500, max(1, limit))
+    query = select(JobQueue).where(
+        (JobQueue.company_id == active_company.id) | (JobQueue.company_id.is_(None))
+    )
+    if status:
+        query = query.where(JobQueue.status == status)
+    jobs = db.scalars(
+        query.order_by(JobQueue.created_at.desc(), JobQueue.id.desc()).limit(safe_limit)
+    ).all()
+
+    out: list[JobQueueOut] = []
+    for job in jobs:
+        try:
+            payload = json.loads(job.payload_json or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        out.append(
+            JobQueueOut(
+                id=job.id,
+                company_id=job.company_id,
+                user_id=job.user_id,
+                job_type=job.job_type,
+                payload=payload,
+                status=job.status,
+                attempts=job.attempts,
+                max_attempts=job.max_attempts,
+                available_at=job.available_at,
+                last_error=job.last_error,
+                created_at=job.created_at,
+                updated_at=job.updated_at,
+            )
+        )
+    return out
+
+
+@app.get("/jobs/stats", response_model=QueueStatsOut)
+def queue_stats(db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+    active_company = get_active_company(db, current_user)
+    company_scope = (JobQueue.company_id == active_company.id) | (JobQueue.company_id.is_(None))
+    queued = db.scalar(select(func.count()).select_from(JobQueue).where(company_scope, JobQueue.status == "queued")) or 0
+    processing = db.scalar(select(func.count()).select_from(JobQueue).where(company_scope, JobQueue.status == "processing")) or 0
+    succeeded = db.scalar(select(func.count()).select_from(JobQueue).where(company_scope, JobQueue.status == "succeeded")) or 0
+    failed = db.scalar(select(func.count()).select_from(JobQueue).where(company_scope, JobQueue.status == "failed")) or 0
+    return QueueStatsOut(queued=queued, processing=processing, succeeded=succeeded, failed=failed)
+
+
+@app.post("/jobs/run-now")
+def run_queue_now(
+    limit: int = 25,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    get_active_company(db, current_user)
+    summary = _process_queued_jobs(db, limit=min(100, max(1, limit)))
+    return summary
+
+
+@app.get("/ops/metrics", response_model=OpsMetricsOut)
+def ops_metrics(db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+    active_company = get_active_company(db, current_user)
+    now = datetime.utcnow()
+    lookback = now - timedelta(hours=24)
+
+    total_invoices = db.scalar(
+        select(func.count()).select_from(Invoice).where(Invoice.company_id == active_company.id)
+    ) or 0
+    overdue_invoices = db.scalar(
+        select(func.count())
+        .select_from(Invoice)
+        .where(
+            Invoice.company_id == active_company.id,
+            Invoice.status == InvoiceStatus.PENDING,
+            Invoice.due_date < now.date(),
+        )
+    ) or 0
+    queued_jobs = db.scalar(
+        select(func.count())
+        .select_from(JobQueue)
+        .where(
+            ((JobQueue.company_id == active_company.id) | (JobQueue.company_id.is_(None))),
+            JobQueue.status == "queued",
+        )
+    ) or 0
+    failed_jobs = db.scalar(
+        select(func.count())
+        .select_from(JobQueue)
+        .where(
+            ((JobQueue.company_id == active_company.id) | (JobQueue.company_id.is_(None))),
+            JobQueue.status == "failed",
+        )
+    ) or 0
+    failed_emails = db.scalar(
+        select(func.count())
+        .select_from(ReminderEmail)
+        .where(
+            ReminderEmail.company_id == active_company.id,
+            ReminderEmail.status == EmailStatus.FAILED,
+        )
+    ) or 0
+    webhook_events_24h = db.scalar(
+        select(func.count())
+        .select_from(WebhookEvent)
+        .where(WebhookEvent.created_at >= lookback)
+    ) or 0
+
+    return OpsMetricsOut(
+        total_invoices=total_invoices,
+        overdue_invoices=overdue_invoices,
+        queued_jobs=queued_jobs,
+        failed_jobs=failed_jobs,
+        failed_emails=failed_emails,
+        webhook_events_24h=webhook_events_24h,
+    )
 
 
 @app.get("/dashboard/stats", response_model=DashboardStats)

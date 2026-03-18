@@ -1,5 +1,6 @@
 const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
 const TOKEN_KEY = "invoice_auth_token";
+const REFRESH_TOKEN_KEY = "invoice_refresh_token";
 
 export function getAuthToken() {
   return localStorage.getItem(TOKEN_KEY) || "";
@@ -13,9 +14,21 @@ export function setAuthToken(token) {
   localStorage.setItem(TOKEN_KEY, token);
 }
 
+export function getRefreshToken() {
+  return localStorage.getItem(REFRESH_TOKEN_KEY) || "";
+}
+
+export function setRefreshToken(token) {
+  if (!token) {
+    localStorage.removeItem(REFRESH_TOKEN_KEY);
+    return;
+  }
+  localStorage.setItem(REFRESH_TOKEN_KEY, token);
+}
+
 async function request(path, options = {}) {
-  const token = getAuthToken();
-  const response = await fetch(`${API_BASE}${path}`, {
+  let token = getAuthToken();
+  let response = await fetch(`${API_BASE}${path}`, {
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -23,6 +36,31 @@ async function request(path, options = {}) {
     },
     ...options,
   });
+
+  if (response.status === 401 && path !== "/auth/login" && path !== "/auth/signup" && path !== "/auth/refresh") {
+    const refresh = getRefreshToken();
+    if (refresh) {
+      const refreshResponse = await fetch(`${API_BASE}/auth/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refresh }),
+      });
+      if (refreshResponse.ok) {
+        const refreshed = await refreshResponse.json();
+        setAuthToken(refreshed.access_token || "");
+        setRefreshToken(refreshed.refresh_token || "");
+        token = getAuthToken();
+        response = await fetch(`${API_BASE}${path}`, {
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            ...(options.headers || {}),
+          },
+          ...options,
+        });
+      }
+    }
+  }
 
   if (!response.ok) {
     let detail = "Request failed";
@@ -41,6 +79,12 @@ async function request(path, options = {}) {
 export const api = {
   signup: (payload) => request("/auth/signup", { method: "POST", body: JSON.stringify(payload) }),
   login: (payload) => request("/auth/login", { method: "POST", body: JSON.stringify(payload) }),
+  refresh: (refresh_token) => request("/auth/refresh", { method: "POST", body: JSON.stringify({ refresh_token }) }),
+  logout: (refresh_token) => request("/auth/logout", { method: "POST", body: JSON.stringify({ refresh_token }) }),
+  logoutAll: () => request("/auth/logout-all", { method: "POST", body: JSON.stringify({}) }),
+  setupMfa: () => request("/auth/mfa/setup", { method: "POST", body: JSON.stringify({}) }),
+  enableMfa: (otp_code) => request("/auth/mfa/enable", { method: "POST", body: JSON.stringify({ otp_code }) }),
+  disableMfa: (otp_code) => request("/auth/mfa/disable", { method: "POST", body: JSON.stringify({ otp_code }) }),
   me: () => request("/auth/me"),
   getStats: () => request("/dashboard/stats"),
   getCompanies: () => request("/companies"),
@@ -103,6 +147,12 @@ export const api = {
     }),
   rejectEmail: (id) => request(`/emails/${id}/reject`, { method: "POST" }),
   getEmails: () => request("/emails"),
+  getAuditLogs: (limit = 50) => request(`/audit/logs?limit=${encodeURIComponent(limit)}`),
+  getQueueJobs: (limit = 100, status = "") =>
+    request(`/jobs/queue?limit=${encodeURIComponent(limit)}${status ? `&status=${encodeURIComponent(status)}` : ""}`),
+  getQueueStats: () => request("/jobs/stats"),
+  runQueueNow: (limit = 25) => request(`/jobs/run-now?limit=${encodeURIComponent(limit)}`, { method: "POST" }),
+  getOpsMetrics: () => request("/ops/metrics"),
   getLatePayerInsights: () => request("/insights/late-payers"),
   getCustomerHistory: () => request("/customers/history"),
   getTeamUsers: () => request("/team/users"),

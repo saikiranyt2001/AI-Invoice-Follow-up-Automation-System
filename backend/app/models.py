@@ -47,6 +47,8 @@ class User(Base):
         nullable=False,
     )
     active_company_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    mfa_enabled: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    mfa_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -95,6 +97,7 @@ class Invoice(Base):
     company_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     customer_name: Mapped[str] = mapped_column(String(120), nullable=False)
     customer_email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    customer_phone: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     due_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     status: Mapped[InvoiceStatus] = mapped_column(SqlEnum(InvoiceStatus), default=InvoiceStatus.PENDING, nullable=False)
@@ -119,6 +122,7 @@ class ReminderEmail(Base):
     status: Mapped[EmailStatus] = mapped_column(SqlEnum(EmailStatus), default=EmailStatus.PENDING_APPROVAL, nullable=False)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    channel: Mapped[str] = mapped_column(String(20), default="email", nullable=False)
     tracking_token: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -128,3 +132,66 @@ class ReminderEmail(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     invoice: Mapped[Invoice] = relationship("Invoice", back_populates="reminders")
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    company_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    entity_type: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    details_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class JobQueue(Base):
+    __tablename__ = "job_queue"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    company_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    job_type: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    available_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class WebhookEvent(Base):
+    __tablename__ = "webhook_events"
+    __table_args__ = (UniqueConstraint("event_key", name="uq_webhook_event_key"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    source: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    event_key: Mapped[str] = mapped_column(String(140), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    processed: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    revoked: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class RevokedAccessToken(Base):
+    __tablename__ = "revoked_access_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    jti: Mapped[str] = mapped_column(String(80), nullable=False, unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)

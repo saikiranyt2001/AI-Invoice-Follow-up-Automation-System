@@ -13,6 +13,7 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
+    otp_code: str | None = Field(default=None, min_length=6, max_length=8)
 
 
 class UserOut(BaseModel):
@@ -21,6 +22,7 @@ class UserOut(BaseModel):
     email: EmailStr
     role: UserRole
     active_company_id: int | None = None
+    mfa_enabled: bool = False
 
     class Config:
         from_attributes = True
@@ -28,8 +30,26 @@ class UserOut(BaseModel):
 
 class TokenOut(BaseModel):
     access_token: str
+    refresh_token: str | None = None
     token_type: str = "bearer"
     user: UserOut
+
+
+class TokenRefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=20, max_length=255)
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str | None = Field(default=None, min_length=20, max_length=255)
+
+
+class MfaSetupOut(BaseModel):
+    secret: str
+    otpauth_uri: str
+
+
+class MfaEnableRequest(BaseModel):
+    otp_code: str = Field(min_length=6, max_length=8)
 
 
 class TeamMemberCreate(BaseModel):
@@ -98,6 +118,7 @@ class CompanyOut(BaseModel):
 class InvoiceCreate(BaseModel):
     customer_name: str = Field(min_length=1, max_length=120)
     customer_email: EmailStr
+    customer_phone: str | None = Field(default=None, max_length=30)
     amount: float = Field(gt=0)
     due_date: date
 
@@ -106,6 +127,7 @@ class InvoiceOut(BaseModel):
     id: int
     customer_name: str
     customer_email: EmailStr
+    customer_phone: str | None = None
     amount: float
     due_date: date
     status: InvoiceStatus
@@ -138,6 +160,7 @@ class ReminderEmailOut(BaseModel):
     subject: str
     body: str
     tone: Tone
+    channel: str
     status: EmailStatus
     failure_reason: str | None
     provider_message_id: str | None
@@ -170,7 +193,7 @@ class LatePayerInsight(BaseModel):
 
 
 class SendEmailRequest(BaseModel):
-    provider: str = Field(default="smtp", pattern="^(smtp|gmail_api)$")
+    provider: str = Field(default="smtp", pattern="^(smtp|gmail_api|twilio_sms)$")
 
 
 class PaymentConfirmRequest(BaseModel):
@@ -194,3 +217,68 @@ class CustomerHistoryOut(BaseModel):
     risk_score: float
     risk_level: str
     trend: list[CustomerHistoryTrendPoint]
+
+
+class AuditLogOut(BaseModel):
+    id: int
+    company_id: int | None
+    user_id: int | None
+    action: str
+    entity_type: str
+    entity_id: int | None
+    details: dict[str, object]
+    created_at: datetime
+
+
+class JobQueueOut(BaseModel):
+    id: int
+    company_id: int | None
+    user_id: int | None
+    job_type: str
+    payload: dict[str, object]
+    status: str
+    attempts: int
+    max_attempts: int
+    available_at: datetime
+    last_error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class QueueStatsOut(BaseModel):
+    queued: int
+    processing: int
+    succeeded: int
+    failed: int
+
+
+class PaymentWebhookIn(BaseModel):
+    payment_reference: str = Field(min_length=3, max_length=255)
+    invoice_id: int | None = Field(default=None, gt=0)
+    payment_token: str | None = Field(default=None, min_length=6, max_length=255)
+    idempotency_key: str = Field(min_length=6, max_length=140)
+    source: str = Field(default="payment_gateway", min_length=2, max_length=60)
+
+
+class EmailStatusWebhookIn(BaseModel):
+    idempotency_key: str = Field(min_length=6, max_length=140)
+    provider_message_id: str | None = Field(default=None, min_length=3, max_length=255)
+    tracking_token: str | None = Field(default=None, min_length=6, max_length=255)
+    status: str = Field(pattern="^(delivered|opened|failed)$")
+    error_message: str | None = Field(default=None, max_length=500)
+    source: str = Field(default="email_provider", min_length=2, max_length=60)
+
+
+class WebhookAckOut(BaseModel):
+    accepted: bool
+    duplicate: bool
+    event_key: str
+
+
+class OpsMetricsOut(BaseModel):
+    total_invoices: int
+    overdue_invoices: int
+    queued_jobs: int
+    failed_jobs: int
+    failed_emails: int
+    webhook_events_24h: int

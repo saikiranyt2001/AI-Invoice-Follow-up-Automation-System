@@ -166,6 +166,7 @@ def create_pending_reminder(
         subject=subject,
         body=body,
         tone=tone,
+        channel="email",
         status=EmailStatus.PENDING_APPROVAL,
     )
     db.add(reminder)
@@ -210,6 +211,80 @@ def send_with_smtp(
         return False, str(exc)
 
 
+def send_with_sms(recipient_hint: str, body: str) -> tuple[bool, str | None]:
+    settings = get_settings()
+    if not settings.sms_enabled:
+        return False, "SMS channel is not enabled"
+    if settings.sms_dry_run:
+        return True, None
+    if not settings.twilio_account_sid or not settings.twilio_auth_token or not settings.twilio_from_number:
+        return False, "Twilio credentials are not configured"
+
+    to_number = recipient_hint.strip()
+    if not to_number:
+        return False, "Missing SMS recipient"
+    if not to_number.startswith("+"):
+        return False, "SMS recipient must be E.164 phone number (example: +14155552671)"
+
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            response = client.post(
+                f"https://api.twilio.com/2010-04-01/Accounts/{settings.twilio_account_sid}/Messages.json",
+                auth=(settings.twilio_account_sid, settings.twilio_auth_token),
+                data={
+                    "From": settings.twilio_from_number,
+                    "To": to_number,
+                    "Body": body,
+                },
+            )
+            if response.status_code >= 400:
+                return False, f"Twilio send failed: {response.text}"
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
+
+
+def send_with_sendgrid(
+    to_email: str,
+    subject: str,
+    body: str,
+    tracking_pixel_url: str,
+) -> tuple[bool, str | None]:
+    settings = get_settings()
+    if settings.dry_run_email:
+        return True, None
+    if not settings.sendgrid_api_key or not (settings.sendgrid_from_email or settings.smtp_from):
+        return False, "SendGrid API key or from email is missing"
+
+    from_email = settings.sendgrid_from_email or settings.smtp_from
+    html_body = f"<p>{body.replace(chr(10), '<br/>')}</p><img src=\"{tracking_pixel_url}\" width=\"1\" height=\"1\" alt=\"\" />"
+
+    payload = {
+        "personalizations": [{"to": [{"email": to_email}]}],
+        "from": {"email": from_email},
+        "subject": subject,
+        "content": [
+            {"type": "text/plain", "value": body},
+            {"type": "text/html", "value": html_body},
+        ],
+    }
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            response = client.post(
+                "https://api.sendgrid.com/v3/mail/send",
+                headers={
+                    "Authorization": f"Bearer {settings.sendgrid_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            if response.status_code >= 400:
+                return False, f"SendGrid send failed: {response.text}"
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
+
+
 def send_reminder_email(db: Session, reminder: ReminderEmail, provider: str = "smtp") -> ReminderEmail:
     invoice = db.get(Invoice, reminder.invoice_id)
     if not invoice:
@@ -233,8 +308,23 @@ def send_reminder_email(db: Session, reminder: ReminderEmail, provider: str = "s
     reminder.last_attempt_at = now
 
     if provider == "gmail_api":
+        reminder.channel = "email"
         success = True
+    elif provider == "sendgrid":
+        reminder.channel = "email"
+        success, error_message = send_with_sendgrid(
+            invoice.customer_email,
+            reminder.subject,
+            reminder.body,
+            tracking_pixel_url,
+        )
+    elif provider == "twilio_sms":
+        reminder.channel = "sms"
+        sms_text = f"Invoice #{invoice.id} overdue. Pay: {build_payment_link(invoice)}"
+        recipient_hint = getattr(invoice, "customer_phone", "") or invoice.customer_email
+        success, error_message = send_with_sms(recipient_hint, sms_text)
     else:
+        reminder.channel = "email"
         success, error_message = send_with_smtp(
             invoice.customer_email,
             reminder.subject,

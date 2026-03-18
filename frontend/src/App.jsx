@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, getAuthToken, setAuthToken } from "./api";
+import { api, getAuthToken, getRefreshToken, setAuthToken, setRefreshToken } from "./api";
 
 const TONES = ["friendly", "professional", "strict"];
 
 const initialInvoiceForm = {
   customer_name: "",
   customer_email: "",
+  customer_phone: "",
   amount: "",
   due_date: "",
 };
@@ -14,6 +15,7 @@ const initialAuthForm = {
   username: "",
   email: "",
   password: "",
+  otp_code: "",
 };
 
 const initialTeamForm = {
@@ -163,6 +165,10 @@ function App() {
   const [teamSortDir, setTeamSortDir] = useState("asc");
   const [integrationConnectors, setIntegrationConnectors] = useState([]);
   const [integrationSources, setIntegrationSources] = useState([]);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [queueJobs, setQueueJobs] = useState([]);
+  const [queueStats, setQueueStats] = useState({ queued: 0, processing: 0, succeeded: 0, failed: 0 });
+  const [opsMetrics, setOpsMetrics] = useState(null);
   const [invoiceForm, setInvoiceForm] = useState(initialInvoiceForm);
   const [teamForm, setTeamForm] = useState(initialTeamForm);
   const [integrationSource, setIntegrationSource] = useState("fake_api");
@@ -283,6 +289,7 @@ function App() {
         setCurrentUser(me);
       } catch {
         setAuthToken("");
+        setRefreshToken("");
         setCurrentUser(null);
       } finally {
         setAuthLoading(false);
@@ -322,13 +329,31 @@ function App() {
 
       if (currentUser?.role === "admin") {
         try {
-          const users = await api.getTeamUsers();
+          const [users, logs, jobs, qstats, metrics] = await Promise.all([
+            api.getTeamUsers(),
+            api.getAuditLogs(80),
+            api.getQueueJobs(80),
+            api.getQueueStats(),
+            api.getOpsMetrics(),
+          ]);
           setTeamUsers(users);
+          setAuditLogs(logs);
+          setQueueJobs(jobs);
+          setQueueStats(qstats);
+          setOpsMetrics(metrics);
         } catch {
           setTeamUsers([]);
+          setAuditLogs([]);
+          setQueueJobs([]);
+          setQueueStats({ queued: 0, processing: 0, succeeded: 0, failed: 0 });
+          setOpsMetrics(null);
         }
       } else {
         setTeamUsers([]);
+        setAuditLogs([]);
+        setQueueJobs([]);
+        setQueueStats({ queued: 0, processing: 0, succeeded: 0, failed: 0 });
+        setOpsMetrics(null);
       }
     } catch (error) {
       setMessage(error.message || "Failed to load data");
@@ -503,10 +528,12 @@ function App() {
           : {
               email: authForm.email,
               password: authForm.password,
+              otp_code: authForm.otp_code || undefined,
             };
 
       const response = authMode === "signup" ? await api.signup(payload) : await api.login(payload);
       setAuthToken(response.access_token);
+      setRefreshToken(response.refresh_token || "");
       setCurrentUser(response.user);
       setAuthForm(initialAuthForm);
       setMessage(`Welcome, ${response.user.username}.`);
@@ -515,8 +542,17 @@ function App() {
     }
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    try {
+      const refresh = getRefreshToken();
+      if (refresh) {
+        await api.logout(refresh);
+      }
+    } catch {
+      // ignore logout call failures
+    }
     setAuthToken("");
+    setRefreshToken("");
     setCurrentUser(null);
     setStats(null);
     setInvoices([]);
@@ -527,7 +563,21 @@ function App() {
     setCustomerHistory([]);
     setIntegrationConnectors([]);
     setCompanies([]);
+    setAuditLogs([]);
+    setQueueJobs([]);
+    setQueueStats({ queued: 0, processing: 0, succeeded: 0, failed: 0 });
+    setOpsMetrics(null);
     setMessage("Logged out.");
+  }
+
+  async function handleRunQueueNow() {
+    try {
+      const result = await api.runQueueNow(25);
+      setMessage(`Queue run: picked ${result.picked}, succeeded ${result.succeeded}, failed ${result.failed}.`);
+      loadData();
+    } catch (error) {
+      setMessage(error.message || "Unable to run queue now");
+    }
   }
 
   async function handleCreateInvoice(event) {
@@ -875,6 +925,16 @@ function App() {
               required
               minLength={8}
             />
+            {authMode === "login" && (
+              <input
+                type="text"
+                placeholder="OTP Code (if MFA enabled)"
+                value={authForm.otp_code}
+                onChange={(e) => setAuthForm((prev) => ({ ...prev, otp_code: e.target.value }))}
+                minLength={6}
+                maxLength={8}
+              />
+            )}
             <button type="submit">{authMode === "signup" ? "Sign Up" : "Login"}</button>
           </form>
 
@@ -976,6 +1036,14 @@ function App() {
         </button>
         {currentUser.role === "admin" && (
           <button
+            className={activeTab === "ops" ? "active" : ""}
+            onClick={() => setActiveTab("ops")}
+          >
+            Ops
+          </button>
+        )}
+        {currentUser.role === "admin" && (
+          <button
             className={activeTab === "team" ? "active" : ""}
             onClick={() => setActiveTab("team")}
           >
@@ -1053,6 +1121,14 @@ function App() {
                     setInvoiceForm((prev) => ({ ...prev, customer_email: e.target.value }))
                   }
                   required
+                />
+                <input
+                  type="text"
+                  placeholder="Customer Phone (optional, E.164 for SMS)"
+                  value={invoiceForm.customer_phone}
+                  onChange={(e) =>
+                    setInvoiceForm((prev) => ({ ...prev, customer_phone: e.target.value }))
+                  }
                 />
                 <input
                   type="number"
@@ -1719,6 +1795,78 @@ function App() {
               </div>
             </article>
           </section>
+        </section>
+      )}
+
+      {activeTab === "ops" && currentUser.role === "admin" && (
+        <section className="panel">
+          <h3>Ops Console</h3>
+          <div className="actions">
+            <button type="button" onClick={handleRunQueueNow}>Run Queue Now</button>
+          </div>
+          <div className="grid-two">
+            <article className="panel">
+              <h3>Queue Status</h3>
+              <p>Queued: {queueStats?.queued ?? 0}</p>
+              <p>Processing: {queueStats?.processing ?? 0}</p>
+              <p>Succeeded: {queueStats?.succeeded ?? 0}</p>
+              <p>Failed: {queueStats?.failed ?? 0}</p>
+              <p>Failed Emails: {opsMetrics?.failed_emails ?? 0}</p>
+              <p>Webhook Events (24h): {opsMetrics?.webhook_events_24h ?? 0}</p>
+            </article>
+            <article className="panel">
+              <h3>Queue Jobs</h3>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>Type</th>
+                      <th>Status</th>
+                      <th>Attempts</th>
+                      <th>Error</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {queueJobs.slice(0, 20).map((job) => (
+                      <tr key={job.id}>
+                        <td>{job.id}</td>
+                        <td>{job.job_type}</td>
+                        <td>{job.status}</td>
+                        <td>{job.attempts}/{job.max_attempts}</td>
+                        <td>{job.last_error || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+          <article className="panel">
+            <h3>Audit Log</h3>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>When</th>
+                    <th>Action</th>
+                    <th>Entity</th>
+                    <th>User</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {auditLogs.slice(0, 40).map((log) => (
+                    <tr key={log.id}>
+                      <td>{new Date(log.created_at).toLocaleString()}</td>
+                      <td>{log.action}</td>
+                      <td>{log.entity_type} #{log.entity_id || "-"}</td>
+                      <td>{log.user_id || "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </article>
         </section>
       )}
 
