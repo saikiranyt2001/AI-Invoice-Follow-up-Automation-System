@@ -182,9 +182,9 @@ function App() {
   const [audienceMode, setAudienceMode] = useState("ops");
   const [displayStats, setDisplayStats] = useState({
     total_invoices: 0,
+    paid_invoices: 0,
+    pending_invoices: 0,
     overdue_invoices: 0,
-    emails_sent: 0,
-    pending_approvals: 0,
   });
   const teamSearchInputRef = useRef(null);
 
@@ -260,21 +260,40 @@ function App() {
   }, [teamUsers, teamSearchTerm, teamFilterMode, teamSortKey, teamSortDir, activeCompany?.owner_user_id, currentUser?.id]);
 
   const kpiVisuals = useMemo(() => {
-    const total = stats?.total_invoices || 0;
-    const overdueCount = stats?.overdue_invoices || 0;
-    const sentCount = stats?.emails_sent || 0;
-    const pendingCount = stats?.pending_approvals || 0;
+    const total = invoices.length || stats?.total_invoices || 0;
+    const paidCount = invoices.filter((invoice) => invoice.status === "paid").length;
+    const pendingCount = Math.max(0, total - paidCount);
+    const overdueCount = overdue.length || stats?.overdue_invoices || 0;
+    const followedUpCount = emailHistory.filter((email) =>
+      ["approved", "sent", "delivered", "opened", "failed"].includes(email.status),
+    ).length;
 
+    const paidPct = total > 0 ? Math.round((paidCount / total) * 100) : 0;
+    const pendingPct = total > 0 ? Math.round((pendingCount / total) * 100) : 0;
     const overduePct = total > 0 ? Math.round((overdueCount / total) * 100) : 0;
-    const sentPct = total > 0 ? Math.round((sentCount / total) * 100) : 0;
-    const queuePct = total > 0 ? Math.round((pendingCount / total) * 100) : 0;
+    const followUpPct = total > 0 ? Math.round((followedUpCount / total) * 100) : 0;
 
     return {
+      paidPct,
+      pendingPct,
       overduePct,
-      sentPct,
-      queuePct,
+      followUpPct,
     };
-  }, [stats]);
+  }, [emailHistory, invoices, overdue, stats]);
+
+  const followUpSummary = useMemo(() => {
+    const draftCount = pendingApprovals.length;
+    const sentCount = emailHistory.filter((email) => ["sent", "delivered", "opened"].includes(email.status)).length;
+    const openedCount = emailHistory.filter((email) => email.status === "opened").length;
+    const failedCount = emailHistory.filter((email) => email.status === "failed").length;
+
+    return {
+      draftCount,
+      sentCount,
+      openedCount,
+      failedCount,
+    };
+  }, [emailHistory, pendingApprovals]);
 
   useEffect(() => {
     async function bootstrapAuth() {
@@ -476,18 +495,22 @@ function App() {
     if (!stats) {
       setDisplayStats({
         total_invoices: 0,
+        paid_invoices: 0,
+        pending_invoices: 0,
         overdue_invoices: 0,
-        emails_sent: 0,
-        pending_approvals: 0,
       });
       return;
     }
 
+    const totalInvoices = invoices.length || stats.total_invoices || 0;
+    const paidInvoices = invoices.filter((invoice) => invoice.status === "paid").length;
+    const pendingInvoices = Math.max(0, totalInvoices - paidInvoices);
+
     const target = {
-      total_invoices: stats.total_invoices || 0,
-      overdue_invoices: stats.overdue_invoices || 0,
-      emails_sent: stats.emails_sent || 0,
-      pending_approvals: stats.pending_approvals || 0,
+      total_invoices: totalInvoices,
+      paid_invoices: paidInvoices,
+      pending_invoices: pendingInvoices,
+      overdue_invoices: overdue.length || stats.overdue_invoices || 0,
     };
 
     const durationMs = 650;
@@ -500,9 +523,9 @@ function App() {
 
       setDisplayStats({
         total_invoices: Math.round(target.total_invoices * eased),
+        paid_invoices: Math.round(target.paid_invoices * eased),
+        pending_invoices: Math.round(target.pending_invoices * eased),
         overdue_invoices: Math.round(target.overdue_invoices * eased),
-        emails_sent: Math.round(target.emails_sent * eased),
-        pending_approvals: Math.round(target.pending_approvals * eased),
       });
 
       if (t < 1) {
@@ -512,7 +535,7 @@ function App() {
 
     frameId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(frameId);
-  }, [stats]);
+  }, [invoices, overdue, stats]);
 
   async function handleAuthSubmit(event) {
     event.preventDefault();
@@ -595,17 +618,17 @@ function App() {
     }
   }
 
-  async function handleCsvUpload(event) {
+  async function handleInvoiceUpload(event) {
     const file = event.target.files?.[0];
     if (!file) {
       return;
     }
     try {
-      const created = await api.uploadCsv(file);
-      setMessage(`Uploaded ${created.length} invoices from CSV.`);
+      const result = await api.uploadInvoicesFile(file);
+      setMessage(`Imported ${result.created_count} invoices from ${file.name}.`);
       loadData();
     } catch (error) {
-      setMessage(error.message || "CSV upload failed");
+      setMessage(error.message || "Invoice upload failed");
     } finally {
       event.target.value = "";
     }
@@ -1063,6 +1086,15 @@ function App() {
             <article className="card">
               <p>Total Invoices</p>
               <h2>{stats ? displayStats.total_invoices : "-"}</h2>
+              <small>Live invoice count across the active company ledger</small>
+            </article>
+            <article className="card success">
+              <p>Paid vs Pending</p>
+              <h2>{stats ? `${displayStats.paid_invoices} / ${displayStats.pending_invoices}` : "-"}</h2>
+              <div className="kpi-spark">
+                <span style={{ width: `${kpiVisuals.paidPct}%` }} />
+              </div>
+              <small>{kpiVisuals.paidPct}% paid, {kpiVisuals.pendingPct}% still pending</small>
             </article>
             <article className="card warning">
               <p>Overdue Invoices</p>
@@ -1070,23 +1102,21 @@ function App() {
               <div className="kpi-spark">
                 <span style={{ width: `${kpiVisuals.overduePct}%` }} />
               </div>
-              <small>{kpiVisuals.overduePct}% of open receivables currently overdue</small>
-            </article>
-            <article className="card success">
-              <p>Emails Sent</p>
-              <h2>{stats ? displayStats.emails_sent : "-"}</h2>
-              <div className="kpi-spark">
-                <span style={{ width: `${kpiVisuals.sentPct}%` }} />
-              </div>
-              <small>{kpiVisuals.sentPct}% reminder coverage across invoice base</small>
+              <small>{kpiVisuals.overduePct}% of the invoice book is overdue</small>
             </article>
             <article className="card info">
-              <p>Pending Approvals</p>
-              <h2>{stats ? displayStats.pending_approvals : "-"}</h2>
-              <div className="kpi-spark">
-                <span style={{ width: `${kpiVisuals.queuePct}%` }} />
+              <p>Follow-up Status</p>
+              <h2>{stats ? followUpSummary.sentCount : "-"}</h2>
+              <div className="followup-status-grid">
+                <span className="followup-chip neutral">Drafts {followUpSummary.draftCount}</span>
+                <span className="followup-chip ok">Sent {followUpSummary.sentCount}</span>
+                <span className="followup-chip info">Opened {followUpSummary.openedCount}</span>
+                <span className="followup-chip danger">Failed {followUpSummary.failedCount}</span>
               </div>
-              <small>{kpiVisuals.queuePct}% awaiting governed approval action</small>
+              <div className="kpi-spark">
+                <span style={{ width: `${kpiVisuals.followUpPct}%` }} />
+              </div>
+              <small>{kpiVisuals.followUpPct}% of invoices have entered the follow-up pipeline</small>
             </article>
           </section>
 
@@ -1100,6 +1130,54 @@ function App() {
               </ol>
             </section>
           )}
+
+          <section className="grid-two">
+            <article className="panel">
+              <h3>Invoice Health Snapshot</h3>
+              <div className="dashboard-snapshot">
+                <div className="snapshot-block">
+                  <span className="snapshot-label">Paid</span>
+                  <strong>{displayStats.paid_invoices}</strong>
+                </div>
+                <div className="snapshot-block">
+                  <span className="snapshot-label">Pending</span>
+                  <strong>{displayStats.pending_invoices}</strong>
+                </div>
+                <div className="snapshot-block">
+                  <span className="snapshot-label">Overdue</span>
+                  <strong>{displayStats.overdue_invoices}</strong>
+                </div>
+              </div>
+              <p className="snapshot-footnote">
+                Pending invoices are still outstanding. Overdue is the subset already past due.
+              </p>
+            </article>
+
+            <article className="panel">
+              <h3>Follow-up Pipeline</h3>
+              <div className="dashboard-snapshot">
+                <div className="snapshot-block">
+                  <span className="snapshot-label">Awaiting Approval</span>
+                  <strong>{followUpSummary.draftCount}</strong>
+                </div>
+                <div className="snapshot-block">
+                  <span className="snapshot-label">Sent/Delivered</span>
+                  <strong>{followUpSummary.sentCount}</strong>
+                </div>
+                <div className="snapshot-block">
+                  <span className="snapshot-label">Opened</span>
+                  <strong>{followUpSummary.openedCount}</strong>
+                </div>
+                <div className="snapshot-block">
+                  <span className="snapshot-label">Failed</span>
+                  <strong>{followUpSummary.failedCount}</strong>
+                </div>
+              </div>
+              <p className="snapshot-footnote">
+                This tracks whether reminders are drafted, sent, opened, or failing in the current cycle.
+              </p>
+            </article>
+          </section>
 
           <section className="grid-two">
             <article className="panel">
@@ -1149,8 +1227,8 @@ function App() {
               </form>
 
               <div className="csv-upload">
-                <label htmlFor="csvUpload">CSV Upload</label>
-                <input id="csvUpload" type="file" accept=".csv" onChange={handleCsvUpload} />
+                <label htmlFor="invoiceUpload">CSV / Excel Upload</label>
+                <input id="invoiceUpload" type="file" accept=".csv,.xlsx,.xls" onChange={handleInvoiceUpload} />
               </div>
             </article>
 

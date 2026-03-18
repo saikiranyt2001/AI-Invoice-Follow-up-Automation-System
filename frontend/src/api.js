@@ -104,12 +104,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ payment_reference }),
     }),
-  uploadCsv: async (file) => {
+  uploadInvoicesFile: async (file) => {
     const token = getAuthToken();
     const formData = new FormData();
     formData.append("file", file);
 
-    const response = await fetch(`${API_BASE}/invoices/upload-csv`, {
+    const response = await fetch(`${API_BASE}/invoices/upload`, {
       method: "POST",
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -118,7 +118,7 @@ export const api = {
     });
 
     if (!response.ok) {
-      let detail = "CSV upload failed";
+      let detail = "Invoice upload failed";
       try {
         const body = await response.json();
         detail = body.detail || detail;

@@ -2,17 +2,29 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 import importlib
+from io import BytesIO
 import sys
 
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import Workbook
 import pyotp
 
 
 APP_MODULES = [
+    "app.api",
+    "app.api.support",
+    "app.api.routes",
+    "app.api.routes.auth",
+    "app.api.routes.emails",
+    "app.api.routes.invoices",
     "app.main",
     "app.security",
     "app.services",
+    "app.services.ai_service",
+    "app.services.email_service",
+    "app.services.invoice_service",
+    "app.services.scheduler_service",
     "app.models",
     "app.database",
     "app.config",
@@ -167,6 +179,73 @@ def test_queue_processes_approved_email_jobs(client: TestClient):
     assert history.status_code == 200, history.text
     target = next(item for item in history.json() if item["id"] == email_id)
     assert target["status"] in {"delivered", "opened", "sent"}
+
+
+def test_generate_email_supports_message_styles(client: TestClient):
+    token, _ = _signup(client, "admin_style", "admin_style@example.com")
+    auth = {"Authorization": f"Bearer {token}"}
+
+    inv = client.post(
+        "/invoices",
+        headers=auth,
+        json={
+            "customer_name": "Styled Customer",
+            "customer_email": "styled@example.com",
+            "amount": 210.0,
+            "due_date": (date.today() - timedelta(days=14)).isoformat(),
+        },
+    )
+    assert inv.status_code == 200, inv.text
+    invoice_id = inv.json()["id"]
+
+    draft = client.post(
+        "/generate-email",
+        headers=auth,
+        json={"invoice_id": invoice_id, "tone": "strict", "message_style": "urgent_payment_notice"},
+    )
+    assert draft.status_code == 200, draft.text
+    body = draft.json()
+    assert "Urgent Payment Notice" in body["subject"]
+    assert "Immediate action is required" in body["body"]
+
+
+def test_automation_status_and_manual_trigger(client: TestClient):
+    token, _ = _signup(client, "admin_scheduler", "admin_scheduler@example.com")
+    auth = {"Authorization": f"Bearer {token}"}
+
+    status = client.get("/automation/status", headers=auth)
+    assert status.status_code == 200, status.text
+    assert "interval_minutes" in status.json()
+    assert "running" in status.json()
+
+    trigger = client.post("/automation/run-now", headers=auth)
+    assert trigger.status_code == 200, trigger.text
+    assert trigger.json()["accepted"] is True
+
+
+def test_invoice_upload_accepts_excel_file(client: TestClient):
+    token, _ = _signup(client, "admin_import", "admin_import@example.com")
+    auth = {"Authorization": f"Bearer {token}"}
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["customer_name", "customer_email", "amount", "due_date", "customer_phone"])
+    sheet.append(["Excel Customer", "excel.customer@example.com", 275.5, date.today().isoformat(), "+15550001111"])
+
+    stream = BytesIO()
+    workbook.save(stream)
+    stream.seek(0)
+
+    response = client.post(
+        "/invoices/upload",
+        headers=auth,
+        files={"file": ("invoices.xlsx", stream.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["created_count"] == 1
+    assert body["error_count"] == 0
+    assert body["invoices"][0]["customer_email"] == "excel.customer@example.com"
 
 
 def test_payment_webhook_is_idempotent(client: TestClient):

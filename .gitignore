@@ -1,17 +1,8 @@
-# Python
+node_modules/
+dist/
 .venv/
-backend/.venv/
-backend/__pycache__/
-backend/app/__pycache__/
-**/__pycache__/
+*.db
+.env
+*.sqlite
+__pycache__/
 *.pyc
-backend/*.db
-backend/*.sqlite
-
-# Node
-frontend/node_modules/
-frontend/dist/
-
-# Env
-backend/.env
-frontend/.env

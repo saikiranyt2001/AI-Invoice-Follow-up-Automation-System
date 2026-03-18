@@ -1,6 +1,7 @@
 from datetime import date, datetime
 from pydantic import BaseModel, EmailStr, Field
 
+from app.email.templates import MessageStyle
 from app.models import EmailStatus, InvoiceStatus, Tone, UserRole
 
 
@@ -147,6 +148,7 @@ class InvoiceStatusUpdate(BaseModel):
 class EmailGenerateRequest(BaseModel):
     invoice_id: int
     tone: Tone = Tone.PROFESSIONAL
+    message_style: MessageStyle = MessageStyle.PAYMENT_REMINDER
 
 
 class ReminderEmailUpdate(BaseModel):
@@ -282,3 +284,20 @@ class OpsMetricsOut(BaseModel):
     failed_jobs: int
     failed_emails: int
     webhook_events_24h: int
+
+
+class AutomationStatusOut(BaseModel):
+    enabled: bool
+    running: bool
+    interval_minutes: int
+    last_tick_at: datetime | None
+    last_success_at: datetime | None
+    next_run_at: datetime | None
+    last_error: str | None
+
+
+class InvoiceImportOut(BaseModel):
+    created_count: int
+    error_count: int
+    errors: list[str]
+    invoices: list[InvoiceOut]

@@ -1,42 +1,143 @@
 # AI Invoice Follow-up Automation System
 
-This project includes:
+AI-powered receivables automation platform for tracking unpaid invoices, sending follow-ups, and improving collection outcomes.
 
-- `backend`: FastAPI API for invoices, overdue detection, AI reminder generation, approval workflow, and email sending.
-- `frontend`: React dashboard for operations and monitoring.
+## 1. Problem
 
-## MVP Features Implemented
+Businesses lose money due to unpaid invoices.
 
-- Overdue invoice detection
-- AI-style payment reminder generation with tone selection (Friendly / Professional / Strict)
-- Pending approval workflow (Preview, Edit, Approve+Send, Reject)
-- Email sending system (SMTP + simulated Gmail API path)
-- Automated overdue reminder scheduler
-- Staged automation cadence (Day 1 Friendly, Day 7 Professional, Day 14 Strict)
-- Email lifecycle tracking (Sent / Delivered / Opened)
-- Failed email retry loop with configurable delay/retry limits
-- Payment links embedded in reminder emails
-- Invoice payment confirmation and paid-status tracking
-- Dashboard with cards, invoices table, approval queue
-- Authentication (Signup/Login + JWT protected APIs + user-scoped data)
+Late payments create cash-flow pressure, increase manual finance work, and force teams to spend time chasing customers instead of running operations. Many businesses still rely on manual reminders, spreadsheets, and inconsistent follow-up processes, which leads to missed collections and poor visibility.
 
-## Bonus Features Included
+## 2. Solution
 
+Automated AI-powered follow-ups.
+
+This system helps finance and operations teams upload invoices, track payment status, generate reminder messages, schedule automated follow-ups, and monitor outcomes from a single dashboard. It combines workflow automation, role-based access, audit visibility, and AI-generated payment reminders.
+
+## 3. Features
+
+- JWT-based authentication with refresh-token support
+- Role-based users: `Admin`, `Accountant`, plus extended internal roles
+- Multi-company workspace support
+- Invoice creation and tracking
 - CSV invoice upload
-- Real-time dashboard refresh (polling every 15 seconds)
-- Email history page
-- AI insights for frequent late payers
-- Customer payment behavior history with rolling risk trend
-- Multi-user system (Admin + Team)
-- Extended role support (Admin, Manager, Accountant, Team)
-- Multi-company workspace with active-company switching and scoped data views
-- Company-level team collaboration (users assigned to the same company share invoices/reminders/insights)
-- Integration-ready invoice import (fake_api, xero, quickbooks, zoho_books simulation)
-- OAuth-style connector scaffold for Xero, QuickBooks, and Zoho Books (connect, callback, sync, disconnect)
+- Excel invoice upload (`.xlsx`)
+- Automatic invoice parsing and validation
+- Overdue invoice detection
+- Payment link generation
+- Payment confirmation flow
+- AI-powered message generation
+- Message styles such as `Friendly Reminder` and `Urgent Payment Notice`
+- Email delivery via SMTP
+- Gmail API email sending
+- Follow-up scheduling for Day 3, Day 7, and Day 14
+- Background automation scheduler
+- Reminder approval workflow
+- Email status tracking: draft, approved, sent, delivered, opened, failed
+- Retry handling for failed reminders
+- Dashboard with invoice and follow-up KPIs
+- Follow-up pipeline visibility
+- Audit logs for invoice, email, and user actions
+- Queue and operations monitoring
+- Payment webhook reconciliation
+- Email webhook reconciliation
+- SMS-ready reminder path
+- Integration-ready import scaffolding
 
-QuickBooks can run in live OAuth mode when `QUICKBOOKS_CLIENT_ID` and `QUICKBOOKS_CLIENT_SECRET` are configured; otherwise it falls back to demo scaffold mode.
+## 4. Demo Flow
 
-## 1) Run Backend
+Upload -> Track -> Auto follow-up -> Payment
+
+### Step 1: Upload
+
+Upload invoices using:
+
+- manual entry
+- CSV file
+- Excel file
+
+The system validates and parses invoice data automatically.
+
+### Step 2: Track
+
+The dashboard shows:
+
+- total invoices
+- paid vs pending
+- overdue invoices
+- follow-up status
+
+### Step 3: Auto Follow-up
+
+For overdue invoices, the platform:
+
+- generates AI-powered reminder messages
+- applies reminder cadence on Day 3, Day 7, and Day 14
+- sends reminders through SMTP or Gmail API
+- records email delivery and engagement events
+
+### Step 4: Payment
+
+Customers can pay through the generated payment flow, and the system updates invoice status, payment reference, and audit history automatically.
+
+## 5. Tech Stack
+
+- Backend: FastAPI
+- Frontend: React + Vite
+- Database: SQLite by default, PostgreSQL-ready
+- ORM: SQLAlchemy
+- Auth: JWT
+- Scheduler: FastAPI background scheduler
+- Queue/Cache support: Redis-ready
+- AI generation: OpenAI API
+- Email: SMTP / Gmail API
+
+## Product Modules
+
+### Email Automation Engine
+
+- SMTP sending
+- Gmail API sending
+- AI-generated templates
+- automated reminder cadence
+
+### Dashboard
+
+- invoice health summary
+- overdue tracking
+- follow-up pipeline visibility
+- ops and audit monitoring
+
+### Scheduler
+
+- automated background reminder execution
+- manual trigger endpoint
+- scheduler status endpoint
+
+### Authentication
+
+- secure login
+- JWT access tokens
+- refresh tokens
+- role-based access
+- MFA support
+
+### Invoice Import
+
+- CSV parsing
+- Excel parsing
+- import validation
+- structured import results
+
+### Auditability
+
+- invoice creation and payment events
+- reminder lifecycle events
+- user and admin actions
+
+## Run Locally
+
+### Backend
 
 ```bash
 cd backend
@@ -49,50 +150,7 @@ uvicorn app.main:app --reload
 
 Backend URL: `http://127.0.0.1:8000`
 
-Notes:
-- By default, `DRY_RUN_EMAIL=true`, so email send requests are marked sent without contacting SMTP.
-- Set `DRY_RUN_EMAIL=false` and configure SMTP values to send real emails.
-- `DATABASE_URL` defaults to SQLite and is PostgreSQL-ready (set e.g. `postgresql+psycopg://...`).
-- Scheduler runs automatically when `AUTOMATION_ENABLED=true`.
-- Use `AUTO_SEND_WITHOUT_APPROVAL=true` only if your company policy allows bypassing manual approval.
-- Set `PAYMENT_LINK_BASE_URL` to your real Stripe/Razorpay hosted payment page base URL.
-	Default is local demo endpoint: `/payments/pay/{token}`.
-
-### Optional: Enable Real AI Email Generation
-
-Set these variables in `backend/.env`:
-
-```bash
-OPENAI_API_KEY=your_api_key
-OPENAI_MODEL=gpt-4o-mini
-OPENAI_BASE_URL=https://api.openai.com/v1
-```
-
-Behavior:
-- If `OPENAI_API_KEY` is configured, reminder content is generated using the model.
-- If AI call fails or is not configured, the system automatically falls back to built-in templates.
-
-### Authentication
-
-All business endpoints are protected and require a Bearer token.
-
-Auth endpoints:
-- `POST /auth/signup`
-- `POST /auth/login`
-- `GET /auth/me`
-
-Role behavior:
-- If no admin exists, the next signup becomes `admin` automatically.
-- Later signups default to `team`.
-- Admin can manage users from Team tab/API and assign `manager` and `accountant` roles.
-
-Use the frontend login/signup screen to authenticate, or call APIs directly and send:
-
-```bash
-Authorization: Bearer <access_token>
-```
-
-## 2) Run Frontend
+### Frontend
 
 ```bash
 cd frontend
@@ -102,71 +160,35 @@ npm run dev
 
 Frontend URL: `http://127.0.0.1:5173`
 
-If backend is not on default URL, set:
+## Demo Credentials Flow
 
-```bash
-set VITE_API_BASE=http://127.0.0.1:8000
-```
+- Sign up the first user
+- First user becomes `admin`
+- Upload invoices
+- Generate or approve reminders
+- Run automated follow-ups
+- Track reminder outcomes
+- Confirm payment
 
-## 3) Smoke Checks
+## Useful Endpoints
 
-Backend API smoke test (run backend first on port 8000):
-
-```bash
-cd backend
-"..\\.venv\\Scripts\\python.exe" smoke_test.py --base-url http://127.0.0.1:8000
-```
-
-Frontend build + audit:
-
-```bash
-cd frontend
-npm run check
-npm run audit
-```
-
-## 4) CI Automation
-
-GitHub Actions workflow is configured at `.github/workflows/ci.yml` and runs on push/pull request:
-
-- Backend smoke test (`backend/smoke_test.py`)
-- Frontend build check (`npm run check`)
-- Frontend dependency audit (`npm run audit`)
-
-## API Endpoints
-
-- `POST /invoices`
-- `POST /invoices/{invoice_id}/mark-paid`
-- `POST /invoices/upload-csv`
-- `GET /invoices`
-- `GET /overdue`
 - `POST /auth/signup`
 - `POST /auth/login`
-- `GET /auth/me`
-- `GET /companies`
-- `POST /companies`
-- `POST /companies/switch`
-- `POST /companies/active/invite` (admin)
-- `POST /companies/active/remove-member` (admin)
-- `POST /automation/run-now` (admin)
-- `POST /generate-email`
-- `GET /team/users` (admin)
-- `POST /team/users` (admin)
-- `GET /integrations/sources`
-- `GET /integrations/connectors`
-- `POST /integrations/{provider}/oauth/start`
-- `POST /integrations/{provider}/oauth/callback`
-- `POST /integrations/{provider}/sync-invoices`
-- `POST /integrations/{provider}/disconnect`
-- `POST /integrations/import-invoices`
-- `GET /emails/pending-approvals`
-- `PATCH /emails/{email_id}/edit`
-- `POST /emails/{email_id}/approve`
-- `POST /emails/{email_id}/reject`
-- `POST /emails/{email_id}/send`
-- `GET /payments/pay/{token}`
-- `POST /payments/confirm/{token}`
-- `GET /emails`
 - `GET /dashboard/stats`
-- `GET /insights/late-payers`
-- `GET /customers/history`
+- `POST /invoices`
+- `POST /invoices/upload`
+- `GET /invoices`
+- `GET /overdue`
+- `POST /generate-email`
+- `GET /emails`
+- `GET /emails/pending-approvals`
+- `POST /automation/run-now`
+- `GET /automation/status`
+- `GET /audit/logs`
+
+## Notes
+
+- SQLite works out of the box for demos.
+- PostgreSQL can be used in production by changing `DATABASE_URL`.
+- Real AI generation requires `OPENAI_API_KEY`.
+- Real email sending requires SMTP or Gmail API configuration.

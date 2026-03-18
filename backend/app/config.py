@@ -14,10 +14,13 @@ class Settings(BaseModel):
     smtp_username: str = os.getenv("SMTP_USERNAME", "")
     smtp_password: str = os.getenv("SMTP_PASSWORD", "")
     smtp_from: str = os.getenv("SMTP_FROM", "")
+    gmail_access_token: str = os.getenv("GMAIL_ACCESS_TOKEN", "")
+    gmail_from_email: str = os.getenv("GMAIL_FROM_EMAIL", "")
     dry_run_email: bool = os.getenv("DRY_RUN_EMAIL", "true").lower() == "true"
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    openai_message_generation_enabled: bool = os.getenv("OPENAI_MESSAGE_GENERATION_ENABLED", "true").lower() == "true"
     sendgrid_api_key: str = os.getenv("SENDGRID_API_KEY", "")
     sendgrid_from_email: str = os.getenv("SENDGRID_FROM_EMAIL", "")
     auth_secret_key: str = os.getenv("AUTH_SECRET_KEY") or secrets.token_urlsafe(48)

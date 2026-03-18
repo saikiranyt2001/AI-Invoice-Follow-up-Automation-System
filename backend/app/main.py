@@ -1,8 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
 from datetime import date, datetime, timedelta, timezone
-from io import StringIO
-import csv
 import random
 import base64
 import secrets
@@ -19,7 +17,7 @@ try:
 except Exception:  # pragma: no cover
     redis_lib = None
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse
 from fastapi.responses import HTMLResponse
@@ -28,7 +26,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.api.routes.auth import router as auth_router
+from app.api.routes.emails import router as email_router
+from app.api.routes.invoices import router as invoice_router
 from app.database import Base, SessionLocal, engine, get_db, run_lightweight_migrations
+from app.invoice_import import parse_invoice_file, validate_invoice_rows
 from app.models import (
     AuditLog,
     Company,
@@ -46,6 +48,7 @@ from app.models import (
     WebhookEvent,
 )
 from app.schemas import (
+    AutomationStatusOut,
     AuditLogOut,
     CompanyCreate,
     CompanyInviteRequest,
@@ -56,6 +59,7 @@ from app.schemas import (
     DashboardStats,
     CustomerHistoryTrendPoint,
     EmailGenerateRequest,
+    InvoiceImportOut,
     IntegrationConnectorOut,
     IntegrationOAuthCallbackRequest,
     IntegrationOAuthStartOut,
@@ -85,6 +89,7 @@ from app.schemas import (
     EmailStatusWebhookIn,
     WebhookAckOut,
 )
+from app.scheduler import AutomationScheduler
 from app.security import (
     create_access_token,
     decode_access_token,
@@ -115,6 +120,7 @@ logger = logging.getLogger(__name__)
 _RATE_LIMIT_BUCKETS: dict[str, deque[float]] = defaultdict(deque)
 _AUTH_RATE_LIMIT_PATHS = {"/auth/login", "/auth/signup"}
 _REDIS_CLIENT: Any = None
+_SCHEDULER: AutomationScheduler | None = None
 
 
 def _prune_bucket(bucket: deque[float], now: float, window_seconds: int) -> None:
@@ -238,6 +244,16 @@ def _enqueue_job(
     return job
 
 
+def _has_active_job(db: Session, job_type: str) -> bool:
+    existing = db.scalar(
+        select(JobQueue.id).where(
+            JobQueue.job_type == job_type,
+            JobQueue.status.in_(["queued", "processing"]),
+        )
+    )
+    return existing is not None
+
+
 def _process_queued_jobs(db: Session, limit: int = 10) -> dict[str, int]:
     now = datetime.utcnow()
     jobs = db.scalars(
@@ -295,46 +311,48 @@ def _process_queued_jobs(db: Session, limit: int = 10) -> dict[str, int]:
     return summary
 
 
-async def _automation_loop() -> None:
-    settings = get_settings()
-    interval_seconds = max(1, settings.automation_interval_minutes) * 60
-    next_automation_run = datetime.utcnow()
-
-    while True:
-        db = SessionLocal()
-        try:
-            now = datetime.utcnow()
-            if settings.automation_enabled and now >= next_automation_run:
-                _enqueue_job(
-                    db,
-                    job_type="automation_cycle",
-                    payload={},
-                    company_id=None,
-                    user_id=None,
-                    max_attempts=2,
-                )
-                next_automation_run = now + timedelta(seconds=interval_seconds)
-            _process_queued_jobs(db, limit=15)
-        except Exception:
-            logger.exception("Automation/queue loop failed")
-        finally:
-            db.close()
-
-        await asyncio.sleep(5)
+def _scheduler_tick() -> None:
+    db = SessionLocal()
+    try:
+        settings = get_settings()
+        if settings.automation_enabled and not _has_active_job(db, "automation_cycle"):
+            _enqueue_job(
+                db,
+                job_type="automation_cycle",
+                payload={},
+                company_id=None,
+                user_id=None,
+                max_attempts=2,
+            )
+        _process_queued_jobs(db, limit=15)
+    except Exception:
+        logger.exception("Automation scheduler tick failed")
+        raise
+    finally:
+        db.close()
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    task = asyncio.create_task(_automation_loop())
+    global _SCHEDULER
+    settings = get_settings()
+    _SCHEDULER = AutomationScheduler(
+        interval_minutes=settings.automation_interval_minutes,
+        is_enabled=lambda: get_settings().automation_enabled,
+        tick=_scheduler_tick,
+    )
+    await _SCHEDULER.start()
     try:
         yield
     finally:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+        if _SCHEDULER:
+            await _SCHEDULER.stop()
 
 
 app = FastAPI(title="AI Invoice Follow-up Automation API", version="1.0.0", lifespan=lifespan)
+app.include_router(auth_router)
+app.include_router(invoice_router)
+app.include_router(email_router)
 
 TRACKING_GIF = base64.b64decode("R0lGODlhAQABAIABAP///wAAACwAAAAAAQABAAACAkQBADs=")
 
@@ -582,18 +600,33 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _trigger_scheduler_run() -> None:
+    if _SCHEDULER:
+        _SCHEDULER.trigger_now()
+        return
+    _scheduler_tick()
+
+
+@app.get("/automation/status", response_model=AutomationStatusOut)
+def automation_status(_: User = Depends(require_admin)):
+    if not _SCHEDULER:
+        settings = get_settings()
+        return AutomationStatusOut(
+            enabled=settings.automation_enabled,
+            running=False,
+            interval_minutes=max(1, settings.automation_interval_minutes),
+            last_tick_at=None,
+            last_success_at=None,
+            next_run_at=None,
+            last_error=None,
+        )
+    return AutomationStatusOut(**_SCHEDULER.status())
+
+
 @app.post("/automation/run-now")
-def automation_run_now(db: Session = Depends(get_db), _: User = Depends(require_admin)):
-    _enqueue_job(
-        db,
-        job_type="automation_cycle",
-        payload={},
-        company_id=None,
-        user_id=None,
-        max_attempts=2,
-    )
-    summary = _process_queued_jobs(db, limit=5)
-    return {"enqueued": 1, "queue_summary": summary}
+def automation_run_now(background_tasks: BackgroundTasks, _: User = Depends(require_admin)):
+    background_tasks.add_task(_trigger_scheduler_run)
+    return {"accepted": True, "message": "Automation cycle scheduled in background"}
 
 
 @app.get("/emails/track/open/{token}.gif")
@@ -657,140 +690,6 @@ def email_status_webhook(
     return WebhookAckOut(accepted=True, duplicate=False, event_key=event.event_key)
 
 
-@app.post("/auth/signup", response_model=TokenOut)
-def signup(payload: UserCreate, db: Session = Depends(get_db)):
-    existing = db.scalar(select(User).where((User.email == payload.email) | (User.username == payload.username)))
-    if existing:
-        raise HTTPException(status_code=400, detail="User with this email or username already exists")
-
-    admin_count = db.scalar(select(func.count()).select_from(User).where(User.role == UserRole.ADMIN)) or 0
-    should_be_admin = admin_count == 0
-    user = User(
-        username=payload.username.strip(),
-        email=payload.email.strip().lower(),
-        role=UserRole.ADMIN if should_be_admin else UserRole.TEAM,
-        password_hash=hash_password(payload.password),
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-
-    default_company = Company(owner_user_id=user.id, name=_default_company_name(user))
-    db.add(default_company)
-    db.flush()
-    db.add(CompanyMembership(company_id=default_company.id, user_id=user.id))
-    user.active_company_id = default_company.id
-    db.commit()
-    db.refresh(user)
-
-    return _issue_auth_tokens(db, user)
-
-
-@app.post("/auth/login", response_model=TokenOut)
-def login(payload: UserLogin, db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.email == payload.email.strip().lower()))
-    if not user or not verify_password(payload.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-
-    if bool(user.mfa_enabled):
-        if not payload.otp_code or not user.mfa_secret or not verify_totp(user.mfa_secret, payload.otp_code):
-            raise HTTPException(status_code=401, detail="MFA code required or invalid")
-
-    return _issue_auth_tokens(db, user)
-
-
-@app.post("/auth/refresh", response_model=TokenOut)
-def refresh_access_token(payload: TokenRefreshRequest, db: Session = Depends(get_db)):
-    token_hash = hash_refresh_token(payload.refresh_token)
-    row = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
-    if not row or bool(row.revoked) or row.expires_at < datetime.utcnow():
-        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
-
-    user = db.get(User, row.user_id)
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-
-    row.revoked = 1
-    db.commit()
-    return _issue_auth_tokens(db, user)
-
-
-@app.post("/auth/logout")
-def logout(
-    payload: LogoutRequest,
-    db: Session = Depends(get_db),
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-):
-    if credentials and credentials.scheme.lower() == "bearer":
-        decoded = decode_access_token(credentials.credentials)
-        jti = str(decoded.get("jti") or "")
-        exp_raw = decoded.get("exp")
-        if jti and exp_raw:
-            expires_at = datetime.fromtimestamp(int(exp_raw), tz=timezone.utc).replace(tzinfo=None)
-            existing = db.scalar(select(RevokedAccessToken).where(RevokedAccessToken.jti == jti))
-            if not existing:
-                db.add(RevokedAccessToken(jti=jti, expires_at=expires_at))
-                db.commit()
-
-    if payload.refresh_token:
-        token_hash = hash_refresh_token(payload.refresh_token)
-        row = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
-        if row and not bool(row.revoked):
-            row.revoked = 1
-            db.commit()
-
-    return {"ok": True}
-
-
-@app.post("/auth/logout-all")
-def logout_all(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    tokens = db.scalars(
-        select(RefreshToken).where(RefreshToken.user_id == current_user.id, RefreshToken.revoked == 0)
-    ).all()
-    for row in tokens:
-        row.revoked = 1
-    db.commit()
-    return {"ok": True, "revoked_refresh_tokens": len(tokens)}
-
-
-@app.post("/auth/mfa/setup", response_model=MfaSetupOut)
-def setup_mfa(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    secret = generate_mfa_secret()
-    current_user.mfa_secret = secret
-    current_user.mfa_enabled = 0
-    db.commit()
-    db.refresh(current_user)
-    uri = f"otpauth://totp/InvoiceAutomation:{current_user.email}?secret={secret}&issuer=InvoiceAutomation"
-    return MfaSetupOut(secret=secret, otpauth_uri=uri)
-
-
-@app.post("/auth/mfa/enable")
-def enable_mfa(payload: MfaEnableRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if not current_user.mfa_secret:
-        raise HTTPException(status_code=400, detail="MFA is not initialized")
-    if not verify_totp(current_user.mfa_secret, payload.otp_code):
-        raise HTTPException(status_code=400, detail="Invalid OTP code")
-    current_user.mfa_enabled = 1
-    db.commit()
-    return {"ok": True, "mfa_enabled": True}
-
-
-@app.post("/auth/mfa/disable")
-def disable_mfa(payload: MfaEnableRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if not current_user.mfa_secret or not bool(current_user.mfa_enabled):
-        return {"ok": True, "mfa_enabled": False}
-    if not verify_totp(current_user.mfa_secret, payload.otp_code):
-        raise HTTPException(status_code=400, detail="Invalid OTP code")
-    current_user.mfa_enabled = 0
-    current_user.mfa_secret = None
-    db.commit()
-    return {"ok": True, "mfa_enabled": False}
-
-
-@app.get("/auth/me", response_model=UserOut)
-def me(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    get_active_company(db, current_user)
-    return current_user
 
 
 @app.get("/companies", response_model=list[CompanyOut])
@@ -1185,143 +1084,6 @@ def import_invoices_from_integration(
     return created
 
 
-@app.post("/invoices", response_model=InvoiceOut)
-def create_invoice(
-    payload: InvoiceCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    active_company = get_active_company(db, current_user)
-    invoice = Invoice(**payload.model_dump(), user_id=current_user.id, company_id=active_company.id)
-    db.add(invoice)
-    db.commit()
-    db.refresh(invoice)
-    _record_audit_event(
-        db,
-        action="invoice_created",
-        entity_type="invoice",
-        entity_id=invoice.id,
-        user_id=current_user.id,
-        company_id=active_company.id,
-        details={"amount": invoice.amount, "due_date": invoice.due_date.isoformat()},
-    )
-    return invoice_to_out(invoice, db)
-
-
-@app.post("/invoices/upload-csv", response_model=list[InvoiceOut])
-def upload_invoices_csv(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    active_company = get_active_company(db, current_user)
-    if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Please upload a CSV file")
-
-    content = file.file.read().decode("utf-8")
-    reader = csv.DictReader(StringIO(content))
-    created: list[InvoiceOut] = []
-
-    required_fields = {"customer_name", "customer_email", "amount", "due_date"}
-    if not required_fields.issubset(set(reader.fieldnames or [])):
-        raise HTTPException(
-            status_code=400,
-            detail="CSV must include customer_name, customer_email, amount, due_date",
-        )
-
-    for row in reader:
-        try:
-            invoice = Invoice(
-                user_id=current_user.id,
-                company_id=active_company.id,
-                customer_name=row["customer_name"].strip(),
-                customer_email=row["customer_email"].strip(),
-                customer_phone=(row.get("customer_phone") or "").strip() or None,
-                amount=float(row["amount"]),
-                due_date=date.fromisoformat(row["due_date"]),
-            )
-        except Exception:
-            continue
-
-        db.add(invoice)
-        db.flush()
-        created.append(invoice_to_out(invoice, db))
-
-    db.commit()
-    return created
-
-
-@app.get("/invoices", response_model=list[InvoiceOut])
-def list_invoices(
-    status: InvoiceStatus | None = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    active_company = get_active_company(db, current_user)
-    query = select(Invoice).where(Invoice.company_id == active_company.id)
-    if status:
-        query = query.where(Invoice.status == status)
-
-    invoices = db.scalars(query.order_by(Invoice.created_at.desc())).all()
-    return [invoice_to_out(invoice, db) for invoice in invoices]
-
-
-@app.patch("/invoices/{invoice_id}/status", response_model=InvoiceOut)
-def update_invoice_status(
-    invoice_id: int,
-    payload: InvoiceStatusUpdate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    active_company = get_active_company(db, current_user)
-    invoice = db.get(Invoice, invoice_id)
-    if not invoice or invoice.company_id != active_company.id:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-
-    invoice.status = payload.status
-    db.commit()
-    db.refresh(invoice)
-    return invoice_to_out(invoice, db)
-
-
-@app.get("/overdue", response_model=list[InvoiceOut])
-def get_overdue_invoices(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    active_company = get_active_company(db, current_user)
-    invoices = db.scalars(
-        select(Invoice).where(
-            Invoice.status == InvoiceStatus.PENDING,
-            Invoice.company_id == active_company.id,
-        )
-    ).all()
-    overdue = [invoice for invoice in invoices if is_overdue(invoice)]
-    return [invoice_to_out(invoice, db) for invoice in overdue]
-
-
-@app.post("/invoices/{invoice_id}/mark-paid", response_model=InvoiceOut)
-def mark_invoice_paid_direct(
-    invoice_id: int,
-    payload: PaymentConfirmRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    active_company = get_active_company(db, current_user)
-    invoice = db.get(Invoice, invoice_id)
-    if not invoice or invoice.company_id != active_company.id:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-
-    was_paid = invoice.status == InvoiceStatus.PAID
-    mark_invoice_paid(db, invoice, payload.payment_reference)
-    if not was_paid:
-        _record_audit_event(
-            db,
-            action="invoice_marked_paid",
-            entity_type="invoice",
-            entity_id=invoice.id,
-            user_id=current_user.id,
-            company_id=active_company.id,
-            details={"payment_reference": invoice.payment_reference or ""},
-        )
-    return invoice_to_out(invoice, db)
 
 
 @app.post("/payments/confirm/{token}", response_model=InvoiceOut)
@@ -1440,180 +1202,6 @@ def confirm_payment_form(token: str, payment_reference: str = Form(...), db: Ses
     )
 
 
-@app.post("/generate-email", response_model=ReminderEmailOut)
-def generate_email(
-    payload: EmailGenerateRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    active_company = get_active_company(db, current_user)
-    invoice = db.get(Invoice, payload.invoice_id)
-    if not invoice or invoice.company_id != active_company.id:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-
-    if invoice.status == InvoiceStatus.PAID:
-        raise HTTPException(status_code=400, detail="Cannot generate reminder for a paid invoice")
-
-    reminder = create_pending_reminder(db, invoice, payload.tone, current_user.id, active_company.id)
-    _record_audit_event(
-        db,
-        action="reminder_generated",
-        entity_type="reminder_email",
-        entity_id=reminder.id,
-        user_id=current_user.id,
-        company_id=active_company.id,
-        details={"invoice_id": invoice.id, "tone": payload.tone.value},
-    )
-    return reminder
-
-
-@app.get("/emails/pending-approvals", response_model=list[ReminderEmailOut])
-def pending_approvals(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    active_company = get_active_company(db, current_user)
-    reminders = db.scalars(
-        select(ReminderEmail)
-        .where(
-            ReminderEmail.status == EmailStatus.PENDING_APPROVAL,
-            ReminderEmail.company_id == active_company.id,
-        )
-        .order_by(ReminderEmail.created_at.desc())
-    ).all()
-    return reminders
-
-
-@app.get("/emails", response_model=list[ReminderEmailOut])
-def list_emails(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    active_company = get_active_company(db, current_user)
-    reminders = db.scalars(
-        select(ReminderEmail)
-        .where(ReminderEmail.company_id == active_company.id)
-        .order_by(ReminderEmail.created_at.desc())
-    ).all()
-    return reminders
-
-
-@app.patch("/emails/{email_id}/edit", response_model=ReminderEmailOut)
-def edit_email(
-    email_id: int,
-    payload: ReminderEmailUpdate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    active_company = get_active_company(db, current_user)
-    reminder = db.get(ReminderEmail, email_id)
-    if not reminder or reminder.company_id != active_company.id:
-        raise HTTPException(status_code=404, detail="Email not found")
-
-    if reminder.status != EmailStatus.PENDING_APPROVAL:
-        raise HTTPException(status_code=400, detail="Only pending approval emails can be edited")
-
-    reminder.subject = payload.subject
-    reminder.body = payload.body
-    db.commit()
-    db.refresh(reminder)
-    return reminder
-
-
-@app.post("/emails/{email_id}/approve", response_model=ReminderEmailOut)
-def approve_email(
-    email_id: int,
-    payload: SendEmailRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    active_company = get_active_company(db, current_user)
-    reminder = db.get(ReminderEmail, email_id)
-    if not reminder or reminder.company_id != active_company.id:
-        raise HTTPException(status_code=404, detail="Email not found")
-
-    if reminder.status != EmailStatus.PENDING_APPROVAL:
-        raise HTTPException(status_code=400, detail="Email is not pending approval")
-
-    reminder.status = EmailStatus.APPROVED
-    db.commit()
-    db.refresh(reminder)
-    job = _enqueue_job(
-        db,
-        job_type="send_reminder_email",
-        payload={"reminder_id": reminder.id, "provider": payload.provider},
-        company_id=active_company.id,
-        user_id=current_user.id,
-        max_attempts=3,
-    )
-    _record_audit_event(
-        db,
-        action="reminder_approved_and_queued",
-        entity_type="reminder_email",
-        entity_id=reminder.id,
-        user_id=current_user.id,
-        company_id=active_company.id,
-        details={"provider": payload.provider, "queue_job_id": job.id},
-    )
-    return reminder
-
-
-@app.post("/emails/{email_id}/send", response_model=ReminderEmailOut)
-def send_email_direct(
-    email_id: int,
-    payload: SendEmailRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    active_company = get_active_company(db, current_user)
-    reminder = db.get(ReminderEmail, email_id)
-    if not reminder or reminder.company_id != active_company.id:
-        raise HTTPException(status_code=404, detail="Email not found")
-
-    if reminder.status not in {EmailStatus.PENDING_APPROVAL, EmailStatus.APPROVED, EmailStatus.FAILED}:
-        raise HTTPException(status_code=400, detail="Email cannot be sent in current state")
-
-    if reminder.status == EmailStatus.PENDING_APPROVAL:
-        reminder.status = EmailStatus.APPROVED
-        db.commit()
-        db.refresh(reminder)
-
-    job = _enqueue_job(
-        db,
-        job_type="send_reminder_email",
-        payload={"reminder_id": reminder.id, "provider": payload.provider},
-        company_id=active_company.id,
-        user_id=current_user.id,
-        max_attempts=3,
-    )
-    _record_audit_event(
-        db,
-        action="reminder_send_queued",
-        entity_type="reminder_email",
-        entity_id=reminder.id,
-        user_id=current_user.id,
-        company_id=active_company.id,
-        details={"provider": payload.provider, "queue_job_id": job.id},
-    )
-    return reminder
-
-
-@app.post("/emails/{email_id}/reject", response_model=ReminderEmailOut)
-def reject_email(email_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    active_company = get_active_company(db, current_user)
-    reminder = db.get(ReminderEmail, email_id)
-    if not reminder or reminder.company_id != active_company.id:
-        raise HTTPException(status_code=404, detail="Email not found")
-
-    if reminder.status != EmailStatus.PENDING_APPROVAL:
-        raise HTTPException(status_code=400, detail="Email is not pending approval")
-
-    reminder.status = EmailStatus.REJECTED
-    db.commit()
-    db.refresh(reminder)
-    _record_audit_event(
-        db,
-        action="reminder_rejected",
-        entity_type="reminder_email",
-        entity_id=reminder.id,
-        user_id=current_user.id,
-        company_id=active_company.id,
-    )
-    return reminder
 
 
 @app.get("/audit/logs", response_model=list[AuditLogOut])

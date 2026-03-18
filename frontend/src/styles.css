@@ -364,6 +364,43 @@ body {
   color: var(--brand);
 }
 
+.followup-status-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 10px 0 8px;
+}
+
+.followup-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 9px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.followup-chip.ok {
+  background: #def6e9;
+  color: #18633c;
+}
+
+.followup-chip.danger {
+  background: #fce1df;
+  color: #8f1f1a;
+}
+
+.followup-chip.neutral {
+  background: #e8efeb;
+  color: #3a4c45;
+}
+
+.followup-chip.info {
+  background: #e3eefc;
+  color: #22508c;
+}
+
 .grid-two {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -386,6 +423,42 @@ body {
   font-family: "Outfit", "Sora", sans-serif;
   font-size: 1.1rem;
   letter-spacing: -0.01em;
+}
+
+.dashboard-snapshot {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.snapshot-block {
+  background: linear-gradient(180deg, #f4faf7 0%, #ffffff 100%);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 12px;
+}
+
+.snapshot-block strong {
+  display: block;
+  margin-top: 6px;
+  font-family: "Outfit", "Sora", sans-serif;
+  font-size: 1.6rem;
+  letter-spacing: -0.02em;
+}
+
+.snapshot-label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.snapshot-footnote {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.5;
 }
 
 .onboarding-panel {
