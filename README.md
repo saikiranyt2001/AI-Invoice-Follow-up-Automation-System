@@ -189,6 +189,17 @@ Run backend tests, backend lint/format checks, and frontend checks:
 python scripts/check_project.py
 ```
 
+## Production Deployment
+
+Production deployment assets are included:
+
+- [docker-compose.prod.yml](/C:/Users/saiki/OneDrive/Documents/AI%20Invoice%20Follow-up%20Automation%20System/docker-compose.prod.yml)
+- [DEPLOYMENT.md](/C:/Users/saiki/OneDrive/Documents/AI%20Invoice%20Follow-up%20Automation%20System/DEPLOYMENT.md)
+- [backend/Dockerfile](/C:/Users/saiki/OneDrive/Documents/AI%20Invoice%20Follow-up%20Automation%20System/backend/Dockerfile)
+- [frontend/Dockerfile](/C:/Users/saiki/OneDrive/Documents/AI%20Invoice%20Follow-up%20Automation%20System/frontend/Dockerfile)
+
+Start from [.env.production.example](/C:/Users/saiki/OneDrive/Documents/AI%20Invoice%20Follow-up%20Automation%20System/.env.production.example) and follow [DEPLOYMENT.md](/C:/Users/saiki/OneDrive/Documents/AI%20Invoice%20Follow-up%20Automation%20System/DEPLOYMENT.md).
+
 ## Demo Credentials Flow
 
 - Sign up the first user

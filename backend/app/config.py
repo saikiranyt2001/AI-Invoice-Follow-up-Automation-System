@@ -8,6 +8,11 @@ from pydantic import BaseModel
 load_dotenv()
 
 
+def _csv_list(name: str, default: str = "") -> list[str]:
+    raw = os.getenv(name, default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 class Settings(BaseModel):
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./invoice_automation.db")
     smtp_host: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
@@ -30,6 +35,9 @@ class Settings(BaseModel):
     auth_algorithm: str = os.getenv("AUTH_ALGORITHM", "HS256")
     auth_access_token_minutes: int = int(os.getenv("AUTH_ACCESS_TOKEN_MINUTES", "1440"))
     auth_refresh_token_days: int = int(os.getenv("AUTH_REFRESH_TOKEN_DAYS", "30"))
+    cors_allowed_origins: list[str] = _csv_list(
+        "CORS_ALLOWED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173"
+    )
     payment_provider: str = os.getenv("PAYMENT_PROVIDER", "internal").lower()
     payment_link_base_url: str = os.getenv(
         "PAYMENT_LINK_BASE_URL", "http://127.0.0.1:8000/payments/pay"
