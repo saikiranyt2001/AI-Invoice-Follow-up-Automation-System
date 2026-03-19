@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 import secrets
+from datetime import timedelta
 from urllib.parse import quote
 
 from sqlalchemy import select
@@ -41,7 +41,9 @@ def create_pending_reminder(
     return reminder
 
 
-def send_reminder_email(db: Session, reminder: ReminderEmail, provider: str = "smtp") -> ReminderEmail:
+def send_reminder_email(
+    db: Session, reminder: ReminderEmail, provider: str = "smtp"
+) -> ReminderEmail:
     invoice = db.get(Invoice, reminder.invoice_id)
     if not invoice:
         reminder.status = EmailStatus.FAILED
@@ -58,9 +60,7 @@ def send_reminder_email(db: Session, reminder: ReminderEmail, provider: str = "s
     tracking_base = get_settings().tracking_base_url.rstrip("/")
     tracking_pixel_url = f"{tracking_base}/emails/track/open/{reminder.tracking_token}.gif"
     invoice_payment_link = build_payment_link(invoice)
-    tracked_payment_link = (
-        f"{tracking_base}/emails/track/click/{reminder.tracking_token}?target={quote(invoice_payment_link, safe='')}"
-    )
+    tracked_payment_link = f"{tracking_base}/emails/track/click/{reminder.tracking_token}?target={quote(invoice_payment_link, safe='')}"
 
     reminder.retry_count = int(reminder.retry_count or 0) + 1
     reminder.last_attempt_at = now
@@ -135,7 +135,9 @@ def retry_failed_emails(db: Session) -> dict[str, int]:
     settings = get_settings()
     min_next_attempt = utcnow() - timedelta(minutes=max(1, settings.retry_delay_minutes))
 
-    failed_emails = db.scalars(select(ReminderEmail).where(ReminderEmail.status == EmailStatus.FAILED)).all()
+    failed_emails = db.scalars(
+        select(ReminderEmail).where(ReminderEmail.status == EmailStatus.FAILED)
+    ).all()
 
     retried = 0
     skipped_retry_limit = 0

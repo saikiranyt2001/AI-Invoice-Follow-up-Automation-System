@@ -36,7 +36,11 @@ body {
   color: var(--text);
   background:
     radial-gradient(circle at 6% 10%, rgba(194, 106, 47, 0.2), transparent 36%),
-    radial-gradient(circle at 100% 4%, rgba(15, 118, 110, 0.2), transparent 33%),
+    radial-gradient(
+      circle at 100% 4%,
+      rgba(15, 118, 110, 0.2),
+      transparent 33%
+    ),
     linear-gradient(180deg, var(--bg-main) 0%, var(--bg-soft) 100%);
 }
 
@@ -109,7 +113,11 @@ body {
   right: -100px;
   width: 360px;
   height: 360px;
-  background: radial-gradient(circle at 40% 40%, rgba(194, 106, 47, 0.28), transparent 70%);
+  background: radial-gradient(
+    circle at 40% 40%,
+    rgba(194, 106, 47, 0.28),
+    transparent 70%
+  );
 }
 
 .app-shell::after {
@@ -117,7 +125,11 @@ body {
   left: -140px;
   width: 420px;
   height: 420px;
-  background: radial-gradient(circle at 40% 40%, rgba(15, 118, 110, 0.23), transparent 70%);
+  background: radial-gradient(
+    circle at 40% 40%,
+    rgba(15, 118, 110, 0.23),
+    transparent 70%
+  );
 }
 
 .hero {
@@ -139,7 +151,11 @@ body {
   width: 220px;
   height: 220px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(194, 106, 47, 0.35) 0%, transparent 65%);
+  background: radial-gradient(
+    circle,
+    rgba(194, 106, 47, 0.35) 0%,
+    transparent 65%
+  );
 }
 
 .eyebrow {
@@ -342,7 +358,11 @@ textarea:focus-visible {
 }
 
 .card {
-  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-alt) 100%);
+  background: linear-gradient(
+    180deg,
+    var(--surface) 0%,
+    var(--surface-alt) 100%
+  );
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   padding: 18px 16px;
@@ -449,6 +469,9 @@ textarea:focus-visible {
   color: #3a4c45;
 }
 
+.card.danger h2 {
+  color: #a52d23;
+}
 .followup-chip.info {
   background: #e3eefc;
   color: #22508c;
@@ -512,6 +535,81 @@ textarea:focus-visible {
   color: var(--muted);
   font-size: 0.84rem;
   line-height: 1.5;
+}
+
+.permissions-panel {
+  border: 1px solid #c8d9d0;
+  background: linear-gradient(145deg, #f6fbf8 0%, #ffffff 100%);
+}
+
+.permissions-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.permissions-header h3 {
+  margin: 0;
+}
+
+.permissions-grid {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.permissions-tab-row {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.permissions-tab-row button {
+  border: 1px solid #c7d7ce;
+  background: #ecf4f0;
+  color: #28473d;
+  border-radius: 999px;
+  padding: 7px 12px;
+  box-shadow: none;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.76rem;
+}
+
+.permissions-tab-row button:hover {
+  transform: none;
+  box-shadow: none;
+  filter: none;
+  background: #e1ede7;
+}
+
+.permissions-tab-row button.active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #ffffff;
+}
+
+.permissions-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  background: #ffffff;
+  border-bottom: 1px solid var(--line);
+}
+
+.permissions-row:last-child {
+  border-bottom: none;
+}
+
+.permissions-capability {
+  font-size: 0.9rem;
+  color: #263732;
 }
 
 .onboarding-panel {
@@ -744,7 +842,9 @@ select {
   padding: 11px 12px;
   color: var(--text);
   background: #fcfffd;
-  transition: border-color 160ms ease, box-shadow 160ms ease;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease;
 }
 
 input:focus,
@@ -765,7 +865,10 @@ button {
   font-weight: 700;
   letter-spacing: 0.01em;
   cursor: pointer;
-  transition: transform 160ms ease, filter 160ms ease, box-shadow 160ms ease;
+  transition:
+    transform 160ms ease,
+    filter 160ms ease,
+    box-shadow 160ms ease;
 }
 
 button:hover {
@@ -1106,6 +1209,11 @@ tbody tr:hover {
   .panel,
   .card {
     border-radius: 14px;
+  }
+
+  .permissions-row {
+    grid-template-columns: 1fr;
+    justify-items: start;
   }
 
   .toast-container {

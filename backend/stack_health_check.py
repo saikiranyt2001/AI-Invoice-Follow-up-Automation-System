@@ -9,7 +9,9 @@ from urllib.request import urlopen
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Check frontend and backend health endpoints")
-    parser.add_argument("--backend-url", default="http://127.0.0.1:8000/health", help="Backend health URL")
+    parser.add_argument(
+        "--backend-url", default="http://127.0.0.1:8000/health", help="Backend health URL"
+    )
     parser.add_argument("--frontend-url", default="http://localhost:5173", help="Frontend URL")
     parser.add_argument("--timeout", type=float, default=5.0, help="Request timeout in seconds")
     return parser.parse_args()

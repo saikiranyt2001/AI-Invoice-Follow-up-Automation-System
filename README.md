@@ -17,37 +17,38 @@ This system helps finance and operations teams upload invoices, track payment st
 ## 3. Features
 
 - JWT-based authentication with refresh-token support
-- Role-based users: `Admin`, `Accountant`, plus extended internal roles
+- Role-based users: `Admin`, `Accountant`, `Viewer`
 - Multi-company workspace support
 - Invoice creation and tracking
 - CSV invoice upload
 - Excel invoice upload (`.xlsx`)
 - Automatic invoice parsing and validation
 - Overdue invoice detection
-- Payment link generation
+- Payment links via internal checkout, Stripe link mode, or Razorpay link mode
 - Payment confirmation flow
 - AI-powered message generation
 - Smart tone recommendation with rationale (delay, amount, payment history)
 - Message styles such as `Friendly Reminder` and `Urgent Payment Notice`
 - Email delivery via SMTP
 - Gmail API email sending
-- Twilio SMS and Twilio WhatsApp reminder support
-- Follow-up scheduling for Day 3, Day 7, and Day 14
+- Twilio SMS and Twilio WhatsApp reminder support with multi-channel follow-up sequencing
+- Follow-up scheduling for Day 1, Day 5, and Day 10
 - Background automation scheduler
 - Reminder approval workflow
 - Email status tracking: draft, approved, sent, delivered, opened, failed
 - Email engagement tracking: open and click analytics
+- Delivery feedback tracking: bounce and spam complaint analytics
 - Invoice PDF generation and secure download endpoint
 - Retry handling for failed reminders
 - Dashboard with invoice and follow-up KPIs
-- Reports analytics view: monthly recovery, delay, open/click rates, top late payers
+- Reports analytics view: monthly recovery, delay, monthly cashflow, open/click/bounce/spam rates, top late payers
 - Follow-up pipeline visibility
 - Audit logs for invoice, email, and user actions
 - Queue and operations monitoring
 - Payment webhook reconciliation
 - Email webhook reconciliation
 - SMS-ready reminder path
-- Integration-ready import scaffolding
+- Integration-ready import scaffolding (QuickBooks, Zoho Books, Tally, and more)
 
 ## 4. Demo Flow
 
@@ -77,7 +78,7 @@ The dashboard shows:
 For overdue invoices, the platform:
 
 - generates AI-powered reminder messages
-- applies reminder cadence on Day 3, Day 7, and Day 14
+- applies reminder cadence on Day 1, Day 5, and Day 10
 - sends reminders through SMTP or Gmail API
 - records email delivery and engagement events
 
@@ -166,6 +167,28 @@ npm run dev
 
 Frontend URL: `http://127.0.0.1:5173`
 
+Set `VITE_API_BASE` if the frontend should point at a non-default backend URL.
+
+## Local Stack Helpers
+
+Run both services together with a clean local SQLite database:
+
+```bash
+python scripts/run_local_stack.py
+```
+
+Validate a clean local stack end to end:
+
+```bash
+python scripts/validate_local_stack.py
+```
+
+Run backend tests, backend lint/format checks, and frontend checks:
+
+```bash
+python scripts/check_project.py
+```
+
 ## Demo Credentials Flow
 
 - Sign up the first user
@@ -187,11 +210,13 @@ Frontend URL: `http://127.0.0.1:5173`
 - `GET /overdue`
 - `POST /generate-email`
 - `GET /reports/overview`
+- `GET /emails/analytics`
 - `GET /emails`
 - `GET /emails/pending-approvals`
 - `GET /emails/track/open/{token}.gif`
 - `GET /emails/track/click/{token}`
 - `POST /webhooks/twilio/status`
+- `POST /webhooks/email/status`
 - `GET /invoices/{invoice_id}/pdf`
 - `POST /automation/run-now`
 - `GET /automation/status`
@@ -199,14 +224,19 @@ Frontend URL: `http://127.0.0.1:5173`
 
 ## Environment Configuration Highlights
 
-- `AUTO_REMINDER_DAY_FRIENDLY`: default `3`
-- `AUTO_REMINDER_DAY_PROFESSIONAL`: default `7`
-- `AUTO_REMINDER_DAY_STRICT`: default `14`
+- `AUTO_REMINDER_DAY_FRIENDLY`: default `1`
+- `AUTO_REMINDER_DAY_PROFESSIONAL`: default `5`
+- `AUTO_REMINDER_DAY_STRICT`: default `10`
 - `TRACKING_BASE_URL`: base URL for open/click tracking links
+- `PAYMENT_PROVIDER`: `internal`, `stripe`, or `razorpay`
+- `STRIPE_PAYMENT_LINK_BASE_URL`: Stripe payment link base URL for Pay Now links
+- `RAZORPAY_PAYMENT_LINK_BASE_URL`: Razorpay payment link base URL for Pay Now links
+- `AUTO_FOLLOWUP_CHANNELS`: comma-separated channel order (for example `smtp,twilio_whatsapp,twilio_sms`)
 - `TWILIO_ACCOUNT_SID`: Twilio account SID
 - `TWILIO_AUTH_TOKEN`: Twilio auth token
 - `TWILIO_FROM_NUMBER`: Twilio SMS sender number
 - `TWILIO_WHATSAPP_FROM_NUMBER`: Twilio WhatsApp sender (for example `whatsapp:+14155238886`)
+- `AUTH_SECRET_KEY`: use a random secret with at least 32 bytes for HS256
 - `SMS_ENABLED`: enable SMS/WhatsApp sending path
 - `SMS_DRY_RUN`: dry-run mode for Twilio channel testing
 
@@ -216,3 +246,5 @@ Frontend URL: `http://127.0.0.1:5173`
 - PostgreSQL can be used in production by changing `DATABASE_URL`.
 - Real AI generation requires `OPENAI_API_KEY`.
 - Real email sending requires SMTP or Gmail API configuration.
+- Stripe/Razorpay payment links require the matching payment link base URL environment variables.
+- Frontend API base can be overridden with `VITE_API_BASE`.

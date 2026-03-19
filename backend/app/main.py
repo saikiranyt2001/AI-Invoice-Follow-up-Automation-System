@@ -1,37 +1,34 @@
 import asyncio
-from contextlib import asynccontextmanager, suppress
-from datetime import date, datetime, timedelta, timezone
-import random
 import base64
-import secrets
-import logging
 import json
+import logging
+import random
+import secrets
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
+from datetime import date, datetime, timedelta
 from html import escape
-from urllib.parse import urlencode
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
+
 try:
     import redis as redis_lib
 except Exception:  # pragma: no cover
     redis_lib = None
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.security import HTTPAuthorizationCredentials
-from fastapi.responses import JSONResponse
-from fastapi.responses import HTMLResponse
-from fastapi.responses import RedirectResponse
+from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
 from app.api.routes.auth import router as auth_router
 from app.api.routes.emails import router as email_router
 from app.api.routes.invoices import router as invoice_router
+from app.config import get_settings
 from app.database import Base, SessionLocal, engine, get_db, run_lightweight_migrations
-from app.invoice_import import parse_invoice_file, validate_invoice_rows
 from app.models import (
     AuditLog,
     Company,
@@ -43,73 +40,54 @@ from app.models import (
     JobQueue,
     RefreshToken,
     ReminderEmail,
-    RevokedAccessToken,
     User,
-    UserRole,
     WebhookEvent,
 )
+from app.scheduler import AutomationScheduler
 from app.schemas import (
-    AutomationStatusOut,
     AuditLogOut,
+    AutomationStatusOut,
     CompanyCreate,
     CompanyInviteRequest,
     CompanyMemberRemoveRequest,
     CompanyOut,
     CompanySwitchRequest,
     CustomerHistoryOut,
-    DashboardStats,
     CustomerHistoryTrendPoint,
-    EmailGenerateRequest,
-    InvoiceImportOut,
+    DashboardStats,
+    EmailAnalyticsOut,
+    EmailStatusWebhookIn,
     IntegrationConnectorOut,
+    IntegrationImportRequest,
     IntegrationOAuthCallbackRequest,
     IntegrationOAuthStartOut,
-    IntegrationImportRequest,
     IntegrationSyncRequest,
-    InvoiceCreate,
     InvoiceOut,
-    InvoiceStatusUpdate,
+    JobQueueOut,
     LatePayerInsight,
     OpsMetricsOut,
     PaymentConfirmRequest,
     PaymentWebhookIn,
     QueueStatsOut,
     ReportsOverviewOut,
-    ReminderEmailOut,
-    ReminderEmailUpdate,
-    SendEmailRequest,
-    TopLatePayerOut,
     TeamMemberCreate,
     TokenOut,
-    TokenRefreshRequest,
+    TopLatePayerOut,
     TwilioStatusWebhookIn,
-    LogoutRequest,
-    MfaEnableRequest,
-    MfaSetupOut,
-    UserCreate,
-    UserLogin,
-    JobQueueOut,
     UserOut,
-    EmailStatusWebhookIn,
     WebhookAckOut,
 )
-from app.scheduler import AutomationScheduler
 from app.security import (
     create_access_token,
-    decode_access_token,
-    generate_mfa_secret,
     get_current_user,
     hash_password,
     hash_refresh_token,
     refresh_token_raw,
+    require_accountant_or_admin,
     require_admin,
-    verify_password,
-    verify_totp,
-    bearer_scheme,
 )
 from app.services import (
     build_payment_link,
-    create_pending_reminder,
     ensure_payment_token,
     is_overdue,
     mark_email_clicked,
@@ -117,6 +95,12 @@ from app.services import (
     mark_invoice_paid,
     run_automation_cycle,
     send_reminder_email,
+)
+from app.services.analytics_service import (
+    _month_key,
+    _month_label,
+    build_reports_overview,
+    compute_email_analytics,
 )
 from app.time_utils import utcnow
 
@@ -378,7 +362,11 @@ async def rate_limit_middleware(request: Request, call_next):
         return await call_next(request)
 
     window_seconds = max(1, settings.rate_limit_window_seconds)
-    max_requests = settings.auth_rate_limit_requests if request.url.path in _AUTH_RATE_LIMIT_PATHS else settings.rate_limit_requests
+    max_requests = (
+        settings.auth_rate_limit_requests
+        if request.url.path in _AUTH_RATE_LIMIT_PATHS
+        else settings.rate_limit_requests
+    )
     max_requests = max(1, max_requests)
     client_ip = request.client.host if request.client else "unknown"
     key = f"{client_ip}:{request.url.path in _AUTH_RATE_LIMIT_PATHS}"
@@ -391,7 +379,9 @@ async def rate_limit_middleware(request: Request, call_next):
             if count == 1:
                 redis_client.expire(redis_key, window_seconds)
             if count > max_requests:
-                return JSONResponse(status_code=429, content={"detail": "Too many requests. Please retry later."})
+                return JSONResponse(
+                    status_code=429, content={"detail": "Too many requests. Please retry later."}
+                )
         except Exception:
             redis_client = False
 
@@ -400,7 +390,9 @@ async def rate_limit_middleware(request: Request, call_next):
         bucket = _RATE_LIMIT_BUCKETS[key]
         _prune_bucket(bucket, now, window_seconds)
         if len(bucket) >= max_requests:
-            return JSONResponse(status_code=429, content={"detail": "Too many requests. Please retry later."})
+            return JSONResponse(
+                status_code=429, content={"detail": "Too many requests. Please retry later."}
+            )
         bucket.append(now)
 
     return await call_next(request)
@@ -421,16 +413,6 @@ def invoice_to_out(invoice: Invoice, db: Session) -> InvoiceOut:
         payment_reference=invoice.payment_reference,
         paid_at=invoice.paid_at,
     )
-
-
-def _month_key(value: date) -> str:
-    return f"{value.year:04d}-{value.month:02d}"
-
-
-def _month_label(month_key: str) -> str:
-    year, month = month_key.split("-")
-    month_start = date(int(year), int(month), 1)
-    return month_start.strftime("%b %Y")
 
 
 def _invoice_days_late(invoice: Invoice) -> int:
@@ -493,7 +475,9 @@ def _build_late_payer_rows(invoices: list[Invoice], limit: int = 5) -> list[dict
             }
         )
 
-    rows.sort(key=lambda item: (float(item["overdue_rate"]), int(item["overdue_invoices"])), reverse=True)
+    rows.sort(
+        key=lambda item: (float(item["overdue_rate"]), int(item["overdue_invoices"])), reverse=True
+    )
     return rows[: max(1, limit)]
 
 
@@ -501,6 +485,7 @@ INTEGRATION_PROVIDERS: dict[str, str] = {
     "xero": "Xero",
     "quickbooks": "QuickBooks",
     "zoho_books": "Zoho Books",
+    "tally": "Tally",
 }
 
 
@@ -524,7 +509,11 @@ def _build_integration_auth_url(provider: str, state: str) -> str:
 
 def _integration_mode(provider: str) -> str:
     settings = get_settings()
-    if provider == "quickbooks" and settings.quickbooks_client_id and settings.quickbooks_client_secret:
+    if (
+        provider == "quickbooks"
+        and settings.quickbooks_client_id
+        and settings.quickbooks_client_secret
+    ):
         return "oauth_live"
     return "oauth_scaffold"
 
@@ -532,7 +521,9 @@ def _integration_mode(provider: str) -> str:
 def _exchange_quickbooks_code(code: str) -> tuple[str, str | None]:
     settings = get_settings()
     if not settings.quickbooks_client_id or not settings.quickbooks_client_secret:
-        raise HTTPException(status_code=400, detail="QuickBooks OAuth credentials are not configured")
+        raise HTTPException(
+            status_code=400, detail="QuickBooks OAuth credentials are not configured"
+        )
 
     data = {
         "grant_type": "authorization_code",
@@ -549,17 +540,23 @@ def _exchange_quickbooks_code(code: str) -> tuple[str, str | None]:
         )
 
     if response.status_code >= 400:
-        raise HTTPException(status_code=400, detail=f"QuickBooks token exchange failed: {response.text}")
+        raise HTTPException(
+            status_code=400, detail=f"QuickBooks token exchange failed: {response.text}"
+        )
 
     payload = response.json()
     access_token = payload.get("access_token")
     if not access_token:
-        raise HTTPException(status_code=400, detail="QuickBooks token exchange returned no access_token")
+        raise HTTPException(
+            status_code=400, detail="QuickBooks token exchange returned no access_token"
+        )
 
     return str(access_token), str(payload.get("refresh_token") or "") or None
 
 
-def _get_or_create_integration_connection(db: Session, company_id: int, provider: str) -> IntegrationConnection:
+def _get_or_create_integration_connection(
+    db: Session, company_id: int, provider: str
+) -> IntegrationConnection:
     connection = db.scalar(
         select(IntegrationConnection).where(
             IntegrationConnection.company_id == company_id,
@@ -576,7 +573,9 @@ def _get_or_create_integration_connection(db: Session, company_id: int, provider
 
 
 def _company_accessible(db: Session, user: User, company_id: int) -> bool:
-    owns = db.scalar(select(Company.id).where(Company.id == company_id, Company.owner_user_id == user.id))
+    owns = db.scalar(
+        select(Company.id).where(Company.id == company_id, Company.owner_user_id == user.id)
+    )
     if owns:
         return True
 
@@ -597,7 +596,11 @@ def _get_accessible_companies(db: Session, user: User) -> list[Company]:
     ids = sorted(set([*owned_ids, *member_ids]))
     if not ids:
         return []
-    return db.scalars(select(Company).where(Company.id.in_(ids)).order_by(Company.created_at.asc(), Company.id.asc())).all()
+    return db.scalars(
+        select(Company)
+        .where(Company.id.in_(ids))
+        .order_by(Company.created_at.asc(), Company.id.asc())
+    ).all()
 
 
 def get_active_company(db: Session, user: User) -> Company:
@@ -685,12 +688,17 @@ def track_email_click(token: str, target: str | None = None, db: Session = Depen
     if not reminder:
         return RedirectResponse(url="/health", status_code=302)
 
-    allowed_prefix = get_settings().payment_link_base_url.rstrip("/")
+    settings = get_settings()
+    allowed_prefixes = [
+        settings.payment_link_base_url.rstrip("/"),
+        settings.stripe_payment_link_base_url.rstrip("/"),
+        settings.razorpay_payment_link_base_url.rstrip("/"),
+    ]
     target = (target or "").strip()
     if not (target.startswith("http://") or target.startswith("https://")):
-        target = allowed_prefix
-    elif not target.startswith(allowed_prefix):
-        target = allowed_prefix
+        target = allowed_prefixes[0]
+    elif not any(target.startswith(prefix) for prefix in allowed_prefixes):
+        target = allowed_prefixes[0]
 
     _record_audit_event(
         db,
@@ -726,7 +734,9 @@ def email_status_webhook(
     reminder: ReminderEmail | None = None
     if payload.provider_message_id:
         reminder = db.scalar(
-            select(ReminderEmail).where(ReminderEmail.provider_message_id == payload.provider_message_id)
+            select(ReminderEmail).where(
+                ReminderEmail.provider_message_id == payload.provider_message_id
+            )
         )
     if not reminder and payload.tracking_token:
         reminder = db.scalar(
@@ -741,6 +751,14 @@ def email_status_webhook(
             reminder.status = EmailStatus.OPENED
             if reminder.opened_at is None:
                 reminder.opened_at = utcnow()
+        elif payload.status == "bounced":
+            reminder.status = EmailStatus.FAILED
+            reminder.bounced_at = utcnow()
+            reminder.failure_reason = payload.error_message or "Provider reported a bounce"
+        elif payload.status == "spam":
+            reminder.status = EmailStatus.FAILED
+            reminder.spam_reported_at = utcnow()
+            reminder.failure_reason = payload.error_message or "Provider reported spam complaint"
         elif payload.status == "failed":
             reminder.status = EmailStatus.FAILED
             reminder.failure_reason = payload.error_message or "Provider reported failure"
@@ -760,7 +778,9 @@ def email_status_webhook(
 
 
 @app.post("/webhooks/twilio/status", response_model=WebhookAckOut)
-def twilio_status_webhook(payload: TwilioStatusWebhookIn, request: Request, db: Session = Depends(get_db)):
+def twilio_status_webhook(
+    payload: TwilioStatusWebhookIn, request: Request, db: Session = Depends(get_db)
+):
     if not _webhook_secret_valid(request.headers.get("X-Webhook-Secret")):
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
 
@@ -778,7 +798,9 @@ def twilio_status_webhook(payload: TwilioStatusWebhookIn, request: Request, db: 
 
     reminder: ReminderEmail | None = None
     if payload.MessageSid:
-        reminder = db.scalar(select(ReminderEmail).where(ReminderEmail.provider_message_id == payload.MessageSid))
+        reminder = db.scalar(
+            select(ReminderEmail).where(ReminderEmail.provider_message_id == payload.MessageSid)
+        )
     if not reminder:
         reminder = db.scalar(
             select(ReminderEmail)
@@ -803,7 +825,9 @@ def twilio_status_webhook(payload: TwilioStatusWebhookIn, request: Request, db: 
                 reminder.opened_at = now
         elif normalized in {"undelivered", "failed", "canceled"}:
             reminder.status = EmailStatus.FAILED
-            reminder.failure_reason = payload.ErrorMessage or payload.ErrorCode or "Twilio reported delivery failure"
+            reminder.failure_reason = (
+                payload.ErrorMessage or payload.ErrorCode or "Twilio reported delivery failure"
+            )
 
         db.commit()
         db.refresh(reminder)
@@ -824,8 +848,6 @@ def twilio_status_webhook(payload: TwilioStatusWebhookIn, request: Request, db: 
     return WebhookAckOut(accepted=True, duplicate=False, event_key=event.event_key)
 
 
-
-
 @app.get("/companies", response_model=list[CompanyOut])
 def list_companies(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     get_active_company(db, current_user)
@@ -836,7 +858,7 @@ def list_companies(db: Session = Depends(get_db), current_user: User = Depends(g
 def create_company(
     payload: CompanyCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_accountant_or_admin),
 ):
     get_active_company(db, current_user)
     company = Company(owner_user_id=current_user.id, name=payload.name.strip())
@@ -933,7 +955,9 @@ def remove_member_from_active_company(
         raise HTTPException(status_code=404, detail="User not found")
 
     if target_user.id == current_user.id:
-        raise HTTPException(status_code=400, detail="You cannot remove yourself from the active company")
+        raise HTTPException(
+            status_code=400, detail="You cannot remove yourself from the active company"
+        )
 
     if target_user.id == active_company.owner_user_id:
         raise HTTPException(status_code=400, detail="Company owner cannot be removed")
@@ -972,16 +996,26 @@ def list_team_users(db: Session = Depends(get_db), current_user: User = Depends(
     if active_company.owner_user_id not in member_ids:
         member_ids = [*member_ids, active_company.owner_user_id]
 
-    users = db.scalars(select(User).where(User.id.in_(member_ids)).order_by(User.created_at.asc())).all()
+    users = db.scalars(
+        select(User).where(User.id.in_(member_ids)).order_by(User.created_at.asc())
+    ).all()
     return users
 
 
 @app.post("/team/users", response_model=UserOut)
-def create_team_user(payload: TeamMemberCreate, db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+def create_team_user(
+    payload: TeamMemberCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
     active_company = get_active_company(db, current_user)
-    existing = db.scalar(select(User).where((User.email == payload.email) | (User.username == payload.username)))
+    existing = db.scalar(
+        select(User).where((User.email == payload.email) | (User.username == payload.username))
+    )
     if existing:
-        raise HTTPException(status_code=400, detail="User with this email or username already exists")
+        raise HTTPException(
+            status_code=400, detail="User with this email or username already exists"
+        )
 
     user = User(
         username=payload.username.strip(),
@@ -1016,12 +1050,15 @@ def list_integration_sources(current_user: User = Depends(get_current_user)):
             {"id": "xero", "mode": "oauth_scaffold", "ready": True},
             {"id": "quickbooks", "mode": "oauth_scaffold", "ready": True},
             {"id": "zoho_books", "mode": "oauth_scaffold", "ready": True},
+            {"id": "tally", "mode": "oauth_scaffold", "ready": True},
         ],
     }
 
 
 @app.get("/integrations/connectors", response_model=list[IntegrationConnectorOut])
-def list_integration_connectors(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def list_integration_connectors(
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+):
     active_company = get_active_company(db, current_user)
     output: list[IntegrationConnectorOut] = []
 
@@ -1039,7 +1076,10 @@ def list_integration_connectors(db: Session = Depends(get_db), current_user: Use
                 display_name=display_name,
                 connected=bool(connection.connected) if connection else False,
                 mode=_integration_mode(provider),
-                auth_url=_build_integration_auth_url(provider, connection.oauth_state if connection and connection.oauth_state else "pending"),
+                auth_url=_build_integration_auth_url(
+                    provider,
+                    connection.oauth_state if connection and connection.oauth_state else "pending",
+                ),
                 last_synced_at=connection.last_synced_at if connection else None,
                 last_error=connection.last_error if connection else None,
             )
@@ -1049,7 +1089,11 @@ def list_integration_connectors(db: Session = Depends(get_db), current_user: Use
 
 
 @app.post("/integrations/{provider}/oauth/start", response_model=IntegrationOAuthStartOut)
-def start_integration_oauth(provider: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def start_integration_oauth(
+    provider: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_accountant_or_admin),
+):
     provider = provider.lower()
     if provider not in INTEGRATION_PROVIDERS:
         raise HTTPException(status_code=400, detail="Unsupported integration provider")
@@ -1062,7 +1106,9 @@ def start_integration_oauth(provider: str, db: Session = Depends(get_db), curren
     connection.updated_at = utcnow()
     db.commit()
 
-    return IntegrationOAuthStartOut(provider=provider, auth_url=_build_integration_auth_url(provider, state), state=state)
+    return IntegrationOAuthStartOut(
+        provider=provider, auth_url=_build_integration_auth_url(provider, state), state=state
+    )
 
 
 @app.post("/integrations/{provider}/oauth/callback", response_model=IntegrationConnectorOut)
@@ -1070,7 +1116,7 @@ def complete_integration_oauth(
     provider: str,
     payload: IntegrationOAuthCallbackRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_accountant_or_admin),
 ):
     provider = provider.lower()
     if provider not in INTEGRATION_PROVIDERS:
@@ -1082,7 +1128,11 @@ def complete_integration_oauth(
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
     now = utcnow()
-    if provider == "quickbooks" and _integration_mode(provider) == "oauth_live" and payload.code != "demo-code":
+    if (
+        provider == "quickbooks"
+        and _integration_mode(provider) == "oauth_live"
+        and payload.code != "demo-code"
+    ):
         access_token, refresh_token = _exchange_quickbooks_code(payload.code)
         connection.access_token = access_token
         connection.refresh_token = refresh_token
@@ -1109,7 +1159,11 @@ def complete_integration_oauth(
 
 
 @app.post("/integrations/{provider}/disconnect", response_model=IntegrationConnectorOut)
-def disconnect_integration(provider: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def disconnect_integration(
+    provider: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_accountant_or_admin),
+):
     provider = provider.lower()
     if provider not in INTEGRATION_PROVIDERS:
         raise HTTPException(status_code=400, detail="Unsupported integration provider")
@@ -1140,7 +1194,7 @@ def sync_integration_invoices(
     provider: str,
     payload: IntegrationSyncRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_accountant_or_admin),
 ):
     provider = provider.lower()
     if provider not in INTEGRATION_PROVIDERS:
@@ -1149,7 +1203,9 @@ def sync_integration_invoices(
     active_company = get_active_company(db, current_user)
     connection = _get_or_create_integration_connection(db, active_company.id, provider)
     if not connection.connected:
-        raise HTTPException(status_code=400, detail=f"{INTEGRATION_PROVIDERS[provider]} is not connected")
+        raise HTTPException(
+            status_code=400, detail=f"{INTEGRATION_PROVIDERS[provider]} is not connected"
+        )
 
     created: list[InvoiceOut] = []
     for idx in range(payload.count):
@@ -1179,7 +1235,7 @@ def sync_integration_invoices(
 def import_invoices_from_integration(
     payload: IntegrationImportRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_accountant_or_admin),
 ):
     active_company = get_active_company(db, current_user)
     source_prefix = {
@@ -1187,6 +1243,7 @@ def import_invoices_from_integration(
         "xero": "Xero",
         "quickbooks": "QuickBooks",
         "zoho_books": "Zoho Books",
+        "tally": "Tally",
     }[payload.source]
 
     created: list[InvoiceOut] = []
@@ -1218,10 +1275,10 @@ def import_invoices_from_integration(
     return created
 
 
-
-
 @app.post("/payments/confirm/{token}", response_model=InvoiceOut)
-def confirm_payment_by_token(token: str, payload: PaymentConfirmRequest, db: Session = Depends(get_db)):
+def confirm_payment_by_token(
+    token: str, payload: PaymentConfirmRequest, db: Session = Depends(get_db)
+):
     invoice = db.scalar(select(Invoice).where(Invoice.payment_token == token))
     if not invoice:
         raise HTTPException(status_code=404, detail="Payment token not found")
@@ -1255,7 +1312,9 @@ def confirm_payment_webhook(
     if not invoice and payload.payment_token:
         invoice = db.scalar(select(Invoice).where(Invoice.payment_token == payload.payment_token))
     if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found for webhook payment confirmation")
+        raise HTTPException(
+            status_code=404, detail="Invoice not found for webhook payment confirmation"
+        )
 
     was_paid = invoice.status == InvoiceStatus.PAID
     mark_invoice_paid(db, invoice, payload.payment_reference)
@@ -1312,7 +1371,9 @@ def payment_checkout_page(token: str, db: Session = Depends(get_db)):
 
 
 @app.post("/payments/confirm-form/{token}", response_class=HTMLResponse)
-def confirm_payment_form(token: str, payment_reference: str = Form(...), db: Session = Depends(get_db)):
+def confirm_payment_form(
+    token: str, payment_reference: str = Form(...), db: Session = Depends(get_db)
+):
     invoice = db.scalar(select(Invoice).where(Invoice.payment_token == token))
     if not invoice:
         raise HTTPException(status_code=404, detail="Payment token not found")
@@ -1334,8 +1395,6 @@ def confirm_payment_form(token: str, payment_reference: str = Form(...), db: Ses
         f"<p>Invoice #{invoice.id} is now marked as paid with reference <strong>{safe_reference}</strong>.</p>"
         "</body></html>"
     )
-
-
 
 
 @app.get("/audit/logs", response_model=list[AuditLogOut])
@@ -1370,7 +1429,7 @@ def list_audit_logs(
                 details=details,
                 created_at=log.created_at,
             )
-    )
+        )
     return out
 
 
@@ -1421,10 +1480,38 @@ def list_queue_jobs(
 def queue_stats(db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
     active_company = get_active_company(db, current_user)
     company_scope = (JobQueue.company_id == active_company.id) | (JobQueue.company_id.is_(None))
-    queued = db.scalar(select(func.count()).select_from(JobQueue).where(company_scope, JobQueue.status == "queued")) or 0
-    processing = db.scalar(select(func.count()).select_from(JobQueue).where(company_scope, JobQueue.status == "processing")) or 0
-    succeeded = db.scalar(select(func.count()).select_from(JobQueue).where(company_scope, JobQueue.status == "succeeded")) or 0
-    failed = db.scalar(select(func.count()).select_from(JobQueue).where(company_scope, JobQueue.status == "failed")) or 0
+    queued = (
+        db.scalar(
+            select(func.count())
+            .select_from(JobQueue)
+            .where(company_scope, JobQueue.status == "queued")
+        )
+        or 0
+    )
+    processing = (
+        db.scalar(
+            select(func.count())
+            .select_from(JobQueue)
+            .where(company_scope, JobQueue.status == "processing")
+        )
+        or 0
+    )
+    succeeded = (
+        db.scalar(
+            select(func.count())
+            .select_from(JobQueue)
+            .where(company_scope, JobQueue.status == "succeeded")
+        )
+        or 0
+    )
+    failed = (
+        db.scalar(
+            select(func.count())
+            .select_from(JobQueue)
+            .where(company_scope, JobQueue.status == "failed")
+        )
+        or 0
+    )
     return QueueStatsOut(queued=queued, processing=processing, succeeded=succeeded, failed=failed)
 
 
@@ -1445,47 +1532,65 @@ def ops_metrics(db: Session = Depends(get_db), current_user: User = Depends(requ
     now = utcnow()
     lookback = now - timedelta(hours=24)
 
-    total_invoices = db.scalar(
-        select(func.count()).select_from(Invoice).where(Invoice.company_id == active_company.id)
-    ) or 0
-    overdue_invoices = db.scalar(
-        select(func.count())
-        .select_from(Invoice)
-        .where(
-            Invoice.company_id == active_company.id,
-            Invoice.status == InvoiceStatus.PENDING,
-            Invoice.due_date < now.date(),
+    total_invoices = (
+        db.scalar(
+            select(func.count()).select_from(Invoice).where(Invoice.company_id == active_company.id)
         )
-    ) or 0
-    queued_jobs = db.scalar(
-        select(func.count())
-        .select_from(JobQueue)
-        .where(
-            ((JobQueue.company_id == active_company.id) | (JobQueue.company_id.is_(None))),
-            JobQueue.status == "queued",
+        or 0
+    )
+    overdue_invoices = (
+        db.scalar(
+            select(func.count())
+            .select_from(Invoice)
+            .where(
+                Invoice.company_id == active_company.id,
+                Invoice.status == InvoiceStatus.PENDING,
+                Invoice.due_date < now.date(),
+            )
         )
-    ) or 0
-    failed_jobs = db.scalar(
-        select(func.count())
-        .select_from(JobQueue)
-        .where(
-            ((JobQueue.company_id == active_company.id) | (JobQueue.company_id.is_(None))),
-            JobQueue.status == "failed",
+        or 0
+    )
+    queued_jobs = (
+        db.scalar(
+            select(func.count())
+            .select_from(JobQueue)
+            .where(
+                ((JobQueue.company_id == active_company.id) | (JobQueue.company_id.is_(None))),
+                JobQueue.status == "queued",
+            )
         )
-    ) or 0
-    failed_emails = db.scalar(
-        select(func.count())
-        .select_from(ReminderEmail)
-        .where(
-            ReminderEmail.company_id == active_company.id,
-            ReminderEmail.status == EmailStatus.FAILED,
+        or 0
+    )
+    failed_jobs = (
+        db.scalar(
+            select(func.count())
+            .select_from(JobQueue)
+            .where(
+                ((JobQueue.company_id == active_company.id) | (JobQueue.company_id.is_(None))),
+                JobQueue.status == "failed",
+            )
         )
-    ) or 0
-    webhook_events_24h = db.scalar(
-        select(func.count())
-        .select_from(WebhookEvent)
-        .where(WebhookEvent.created_at >= lookback)
-    ) or 0
+        or 0
+    )
+    failed_emails = (
+        db.scalar(
+            select(func.count())
+            .select_from(ReminderEmail)
+            .where(
+                ReminderEmail.company_id == active_company.id,
+                ReminderEmail.status == EmailStatus.FAILED,
+            )
+        )
+        or 0
+    )
+    webhook_events_24h = (
+        db.scalar(
+            select(func.count())
+            .select_from(WebhookEvent)
+            .where(WebhookEvent.created_at >= lookback)
+        )
+        or 0
+    )
 
     return OpsMetricsOut(
         total_invoices=total_invoices,
@@ -1500,11 +1605,12 @@ def ops_metrics(db: Session = Depends(get_db), current_user: User = Depends(requ
 @app.get("/dashboard/stats", response_model=DashboardStats)
 def dashboard_stats(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     active_company = get_active_company(db, current_user)
-    total_invoices = db.scalar(
-        select(func.count())
-        .select_from(Invoice)
-        .where(Invoice.company_id == active_company.id)
-    ) or 0
+    total_invoices = (
+        db.scalar(
+            select(func.count()).select_from(Invoice).where(Invoice.company_id == active_company.id)
+        )
+        or 0
+    )
     pending_invoices = db.scalars(
         select(Invoice).where(
             Invoice.status == InvoiceStatus.PENDING,
@@ -1512,22 +1618,30 @@ def dashboard_stats(db: Session = Depends(get_db), current_user: User = Depends(
         )
     ).all()
     overdue_invoices = sum(1 for inv in pending_invoices if is_overdue(inv))
-    emails_sent = db.scalar(
-        select(func.count())
-        .select_from(ReminderEmail)
-        .where(
-            ReminderEmail.status.in_([EmailStatus.SENT, EmailStatus.DELIVERED, EmailStatus.OPENED]),
-            ReminderEmail.company_id == active_company.id,
+    emails_sent = (
+        db.scalar(
+            select(func.count())
+            .select_from(ReminderEmail)
+            .where(
+                ReminderEmail.status.in_(
+                    [EmailStatus.SENT, EmailStatus.DELIVERED, EmailStatus.OPENED]
+                ),
+                ReminderEmail.company_id == active_company.id,
+            )
         )
-    ) or 0
-    pending_approvals = db.scalar(
-        select(func.count())
-        .select_from(ReminderEmail)
-        .where(
-            ReminderEmail.status == EmailStatus.PENDING_APPROVAL,
-            ReminderEmail.company_id == active_company.id,
+        or 0
+    )
+    pending_approvals = (
+        db.scalar(
+            select(func.count())
+            .select_from(ReminderEmail)
+            .where(
+                ReminderEmail.status == EmailStatus.PENDING_APPROVAL,
+                ReminderEmail.company_id == active_company.id,
+            )
         )
-    ) or 0
+        or 0
+    )
 
     return DashboardStats(
         total_invoices=total_invoices,
@@ -1538,11 +1652,11 @@ def dashboard_stats(db: Session = Depends(get_db), current_user: User = Depends(
 
 
 @app.get("/insights/late-payers", response_model=list[LatePayerInsight])
-def late_payer_insights(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def late_payer_insights(
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+):
     active_company = get_active_company(db, current_user)
-    invoices = db.scalars(
-        select(Invoice).where(Invoice.company_id == active_company.id)
-    ).all()
+    invoices = db.scalars(select(Invoice).where(Invoice.company_id == active_company.id)).all()
     if not invoices:
         return []
     rows = _build_late_payer_rows(invoices, limit=5)
@@ -1551,7 +1665,9 @@ def late_payer_insights(db: Session = Depends(get_db), current_user: User = Depe
         overdue_rate = float(data["overdue_rate"])
         if overdue_rate >= 60:
             risk_level = "high"
-            insight = "Frequent payment delays. Prioritize proactive reminders and stricter follow-up."
+            insight = (
+                "Frequent payment delays. Prioritize proactive reminders and stricter follow-up."
+            )
         elif overdue_rate >= 30:
             risk_level = "medium"
             insight = "Occasional payment delays. Consider sending reminders earlier than due date."
@@ -1581,70 +1697,26 @@ def reports_overview(db: Session = Depends(get_db), current_user: User = Depends
         .where(Invoice.company_id == active_company.id)
         .order_by(Invoice.due_date.asc())
     ).all()
-
-    if not invoices:
-        return ReportsOverviewOut(
-            monthly_recovery=[],
-            monthly_recovery_rate=0.0,
-            avg_payment_delay_days=0.0,
-            email_open_rate=0.0,
-            email_click_rate=0.0,
-            top_late_payers=[],
-        )
-
-    monthly_agg: dict[str, dict[str, float]] = {}
-    paid_delay_days: list[int] = []
-
-    for item in invoices:
-        month = _month_key(item.due_date)
-        bucket = monthly_agg.setdefault(month, {"invoiced": 0.0, "paid": 0.0})
-        bucket["invoiced"] += float(item.amount)
-        if item.status == InvoiceStatus.PAID:
-            bucket["paid"] += float(item.amount)
-            if item.paid_at:
-                paid_delay_days.append(max(0, (item.paid_at.date() - item.due_date).days))
-
-    month_keys = sorted(monthly_agg.keys())[-6:]
-    monthly_recovery = []
-    total_invoiced = 0.0
-    total_paid = 0.0
-    for month in month_keys:
-        bucket = monthly_agg[month]
-        invoiced_amount = round(bucket["invoiced"], 2)
-        paid_amount = round(bucket["paid"], 2)
-        rate = round((paid_amount / invoiced_amount) * 100, 1) if invoiced_amount > 0 else 0.0
-        monthly_recovery.append(
-            {
-                "month": _month_label(month),
-                "invoiced_amount": invoiced_amount,
-                "paid_amount": paid_amount,
-                "recovery_rate": rate,
-            }
-        )
-        total_invoiced += invoiced_amount
-        total_paid += paid_amount
-
-    monthly_recovery_rate = round((total_paid / total_invoiced) * 100, 1) if total_invoiced > 0 else 0.0
-    avg_payment_delay_days = round(sum(paid_delay_days) / len(paid_delay_days), 1) if paid_delay_days else 0.0
-
     reminder_emails = db.scalars(
         select(ReminderEmail).where(ReminderEmail.company_id == active_company.id)
     ).all()
-    sent_like_count = sum(1 for item in reminder_emails if item.sent_at is not None)
-    opened_count = sum(1 for item in reminder_emails if item.opened_at is not None)
-    clicked_count = sum(1 for item in reminder_emails if int(item.click_count or 0) > 0)
-    email_open_rate = round((opened_count / sent_like_count) * 100, 1) if sent_like_count else 0.0
-    email_click_rate = round((clicked_count / sent_like_count) * 100, 1) if sent_like_count else 0.0
 
     late_rows = _build_late_payer_rows(invoices, limit=5)
-    return ReportsOverviewOut(
-        monthly_recovery=monthly_recovery,
-        monthly_recovery_rate=monthly_recovery_rate,
-        avg_payment_delay_days=avg_payment_delay_days,
-        email_open_rate=email_open_rate,
-        email_click_rate=email_click_rate,
-        top_late_payers=[TopLatePayerOut(**row) for row in late_rows],
+    overview = build_reports_overview(
+        invoices,
+        reminder_emails,
+        top_late_payers=[TopLatePayerOut(**row).model_dump() for row in late_rows],
     )
+    return ReportsOverviewOut(**overview)
+
+
+@app.get("/emails/analytics", response_model=EmailAnalyticsOut)
+def email_analytics(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    active_company = get_active_company(db, current_user)
+    reminders = db.scalars(
+        select(ReminderEmail).where(ReminderEmail.company_id == active_company.id)
+    ).all()
+    return EmailAnalyticsOut(**compute_email_analytics(reminders).model_dump())
 
 
 @app.get("/customers/history", response_model=list[CustomerHistoryOut])
@@ -1671,9 +1743,7 @@ def customer_history(db: Session = Depends(get_db), current_user: User = Depends
         paid_items = [item for item in items if item.status == InvoiceStatus.PAID]
         paid_count = len(paid_items)
         overdue_count = sum(
-            1
-            for item in items
-            if item.status == InvoiceStatus.PENDING and item.due_date < now
+            1 for item in items if item.status == InvoiceStatus.PENDING and item.due_date < now
         )
         outstanding_amount = round(
             sum(item.amount for item in items if item.status != InvoiceStatus.PAID),
@@ -1681,9 +1751,7 @@ def customer_history(db: Session = Depends(get_db), current_user: User = Depends
         )
 
         on_time_paid = sum(
-            1
-            for item in paid_items
-            if item.paid_at and item.paid_at.date() <= item.due_date
+            1 for item in paid_items if item.paid_at and item.paid_at.date() <= item.due_date
         )
         on_time_rate = round((on_time_paid / paid_count) * 100, 1) if paid_count else 0.0
 
@@ -1706,29 +1774,27 @@ def customer_history(db: Session = Depends(get_db), current_user: User = Depends
             )
             month_paid = [item for item in month_items if item.status == InvoiceStatus.PAID]
             month_late_paid = sum(
-                1
-                for item in month_paid
-                if item.paid_at and item.paid_at.date() > item.due_date
+                1 for item in month_paid if item.paid_at and item.paid_at.date() > item.due_date
             )
             month_overdue_rate = (month_overdue / month_total) * 100 if month_total else 0.0
             month_late_paid_rate = (month_late_paid / month_total) * 100 if month_total else 0.0
             month_outstanding_rate = (
-                (sum(item.amount for item in month_items if item.status != InvoiceStatus.PAID) /
-                 max(1.0, sum(item.amount for item in month_items))) * 100
-            )
+                sum(item.amount for item in month_items if item.status != InvoiceStatus.PAID)
+                / max(1.0, sum(item.amount for item in month_items))
+            ) * 100
 
             trend.append(
                 CustomerHistoryTrendPoint(
                     month=_month_label(month),
-                    risk_score=_risk_score(month_overdue_rate, month_late_paid_rate, month_outstanding_rate),
+                    risk_score=_risk_score(
+                        month_overdue_rate, month_late_paid_rate, month_outstanding_rate
+                    ),
                 )
             )
 
         overdue_rate = (overdue_count / total) * 100 if total else 0.0
         late_paid_count = sum(
-            1
-            for item in paid_items
-            if item.paid_at and item.paid_at.date() > item.due_date
+            1 for item in paid_items if item.paid_at and item.paid_at.date() > item.due_date
         )
         late_paid_rate = (late_paid_count / total) * 100 if total else 0.0
         total_amount = max(1.0, sum(item.amount for item in items))
@@ -1754,4 +1820,3 @@ def customer_history(db: Session = Depends(get_db), current_user: User = Depends
 
     output.sort(key=lambda item: (item.risk_score, item.outstanding_amount), reverse=True)
     return output
-

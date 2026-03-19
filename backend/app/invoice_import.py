@@ -6,7 +6,6 @@ from io import BytesIO, StringIO
 
 from openpyxl import load_workbook
 
-
 REQUIRED_FIELDS = {"customer_name", "customer_email", "amount", "due_date"}
 FIELD_ALIASES = {
     "customer": "customer_name",
@@ -80,7 +79,11 @@ def _parse_csv(content: bytes) -> list[dict[str, str]]:
     headers = {_canonical_key(name) for name in (reader.fieldnames or [])}
     if not REQUIRED_FIELDS.issubset(headers):
         raise ValueError("File must include customer_name, customer_email, amount, due_date")
-    return [_normalize_row(row) for row in reader if any(str(value or "").strip() for value in row.values())]
+    return [
+        _normalize_row(row)
+        for row in reader
+        if any(str(value or "").strip() for value in row.values())
+    ]
 
 
 def _parse_excel(content: bytes) -> list[dict[str, str]]:
@@ -98,6 +101,9 @@ def _parse_excel(content: bytes) -> list[dict[str, str]]:
     for values in rows[1:]:
         if not values or not any(value not in (None, "") for value in values):
             continue
-        raw = {headers[index]: values[index] if index < len(values) else "" for index in range(len(headers))}
+        raw = {
+            headers[index]: values[index] if index < len(values) else ""
+            for index in range(len(headers))
+        }
         parsed_rows.append(_normalize_row(raw))
     return parsed_rows

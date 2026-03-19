@@ -1,4 +1,5 @@
 from datetime import date, datetime
+
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.email.templates import MessageStyle
@@ -56,11 +57,11 @@ class TeamMemberCreate(BaseModel):
     username: str = Field(min_length=3, max_length=80)
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
-    role: UserRole = UserRole.TEAM
+    role: UserRole = UserRole.VIEWER
 
 
 class IntegrationImportRequest(BaseModel):
-    source: str = Field(pattern="^(fake_api|xero|quickbooks|zoho_books)$")
+    source: str = Field(pattern="^(fake_api|xero|quickbooks|zoho_books|tally)$")
     count: int = Field(default=5, ge=1, le=50)
 
 
@@ -164,12 +165,15 @@ class ReminderEmailOut(BaseModel):
     status: EmailStatus
     failure_reason: str | None
     provider_message_id: str | None
+    tracking_token: str | None
     retry_count: int
     last_attempt_at: datetime | None
     sent_at: datetime | None
     delivered_at: datetime | None
     opened_at: datetime | None
     clicked_at: datetime | None
+    bounced_at: datetime | None
+    spam_reported_at: datetime | None
     click_count: int
     tone_rationale: str | None
     tone_factors_json: str | None
@@ -196,7 +200,9 @@ class LatePayerInsight(BaseModel):
 
 
 class SendEmailRequest(BaseModel):
-    provider: str = Field(default="smtp", pattern="^(smtp|gmail_api|sendgrid|twilio_sms|twilio_whatsapp)$")
+    provider: str = Field(
+        default="smtp", pattern="^(smtp|gmail_api|sendgrid|twilio_sms|twilio_whatsapp)$"
+    )
 
 
 class PaymentConfirmRequest(BaseModel):
@@ -229,6 +235,13 @@ class MonthlyRecoveryPoint(BaseModel):
     recovery_rate: float
 
 
+class MonthlyCashflowPoint(BaseModel):
+    month: str
+    cash_in: float
+    cash_outstanding: float
+    net_cashflow: float
+
+
 class TopLatePayerOut(BaseModel):
     customer_name: str
     customer_email: EmailStr
@@ -239,6 +252,7 @@ class TopLatePayerOut(BaseModel):
 
 class ReportsOverviewOut(BaseModel):
     monthly_recovery: list[MonthlyRecoveryPoint]
+    monthly_cashflow: list[MonthlyCashflowPoint]
     monthly_recovery_rate: float
     avg_payment_delay_days: float
     email_open_rate: float
@@ -291,7 +305,7 @@ class EmailStatusWebhookIn(BaseModel):
     idempotency_key: str = Field(min_length=6, max_length=140)
     provider_message_id: str | None = Field(default=None, min_length=3, max_length=255)
     tracking_token: str | None = Field(default=None, min_length=6, max_length=255)
-    status: str = Field(pattern="^(delivered|opened|failed)$")
+    status: str = Field(pattern="^(delivered|opened|failed|bounced|spam)$")
     error_message: str | None = Field(default=None, max_length=500)
     source: str = Field(default="email_provider", min_length=2, max_length=60)
 
@@ -318,6 +332,21 @@ class OpsMetricsOut(BaseModel):
     failed_jobs: int
     failed_emails: int
     webhook_events_24h: int
+
+
+class EmailAnalyticsOut(BaseModel):
+    total_messages: int
+    sent_messages: int
+    delivered_messages: int
+    opened_messages: int
+    clicked_messages: int
+    bounced_messages: int
+    spam_reported_messages: int
+    failed_messages: int
+    open_rate: float
+    click_rate: float
+    bounce_rate: float
+    spam_rate: float
 
 
 class AutomationStatusOut(BaseModel):

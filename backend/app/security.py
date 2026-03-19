@@ -1,15 +1,16 @@
-from datetime import datetime, timedelta, timezone
 import hashlib
 import secrets
 import uuid
+from datetime import datetime, timedelta, timezone
 
+import jwt
+import pyotp
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
+from jwt import InvalidTokenError
 from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-import pyotp
 
 from app.config import get_settings
 from app.database import get_db
@@ -38,8 +39,10 @@ def decode_access_token(token: str) -> dict[str, object]:
     settings = get_settings()
     try:
         payload = jwt.decode(token, settings.auth_secret_key, algorithms=[settings.auth_algorithm])
-    except JWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+    except InvalidTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token"
+        )
     return payload
 
 
@@ -67,7 +70,9 @@ def get_current_user(
     db: Session = Depends(get_db),
 ) -> User:
     if not credentials or credentials.scheme.lower() != "bearer":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required"
+        )
 
     token = credentials.credentials
 
@@ -79,13 +84,28 @@ def get_current_user(
     if jti:
         revoked = db.scalar(select(RevokedAccessToken).where(RevokedAccessToken.jti == jti))
         if revoked:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked"
+            )
 
     user = db.scalar(select(User).where(User.email == email))
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
 
     return user
+
+
+def require_accountant_or_admin(current_user: User = Depends(get_current_user)) -> User:
+    if current_user.role not in {UserRole.ADMIN, UserRole.ACCOUNTANT}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Accountant or admin access required"
+        )
+    return current_user
+
+
+def require_read_only_or_higher(current_user: User = Depends(get_current_user)) -> User:
+    # Any authenticated role can read scoped company data.
+    return current_user
 
 
 def require_admin(current_user: User = Depends(get_current_user)) -> User:

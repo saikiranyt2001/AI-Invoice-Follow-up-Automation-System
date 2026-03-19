@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from app.models import Invoice
 from app.time_utils import utcnow
 
@@ -45,7 +43,11 @@ def build_invoice_pdf(invoice: Invoice, payment_url: str, company_name: str) -> 
         b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
         b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
         b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\nendobj\n",
-        b"4 0 obj\n<< /Length " + str(len(stream_data)).encode("ascii") + b" >>\nstream\n" + stream_data + b"\nendstream\nendobj\n",
+        b"4 0 obj\n<< /Length "
+        + str(len(stream_data)).encode("ascii")
+        + b" >>\nstream\n"
+        + stream_data
+        + b"\nendstream\nendobj\n",
         b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
     ]
 
@@ -61,9 +63,6 @@ def build_invoice_pdf(invoice: Invoice, payment_url: str, company_name: str) -> 
     for offset in offsets[1:]:
         pdf.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
 
-    trailer = (
-        f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\n"
-        f"startxref\n{xref_start}\n%%EOF\n"
-    )
+    trailer = f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref_start}\n%%EOF\n"
     pdf.extend(trailer.encode("ascii"))
     return bytes(pdf)

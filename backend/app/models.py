@@ -1,7 +1,8 @@
 from datetime import date, datetime
 from enum import Enum
 
-from sqlalchemy import Date, DateTime, Enum as SqlEnum, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -31,9 +32,8 @@ class Tone(str, Enum):
 
 class UserRole(str, Enum):
     ADMIN = "admin"
-    MANAGER = "manager"
+    VIEWER = "viewer"
     ACCOUNTANT = "accountant"
-    TEAM = "team"
 
 
 class User(Base):
@@ -44,7 +44,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     role: Mapped[UserRole] = mapped_column(
         SqlEnum(UserRole, values_callable=lambda enum_cls: [member.value for member in enum_cls]),
-        default=UserRole.TEAM,
+        default=UserRole.VIEWER,
         nullable=False,
     )
     active_company_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
@@ -101,13 +101,17 @@ class Invoice(Base):
     customer_phone: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     due_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
-    status: Mapped[InvoiceStatus] = mapped_column(SqlEnum(InvoiceStatus), default=InvoiceStatus.PENDING, nullable=False)
+    status: Mapped[InvoiceStatus] = mapped_column(
+        SqlEnum(InvoiceStatus), default=InvoiceStatus.PENDING, nullable=False
+    )
     payment_token: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     payment_reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
-    reminders: Mapped[list["ReminderEmail"]] = relationship("ReminderEmail", back_populates="invoice", cascade="all, delete-orphan")
+    reminders: Mapped[list["ReminderEmail"]] = relationship(
+        "ReminderEmail", back_populates="invoice", cascade="all, delete-orphan"
+    )
 
 
 class ReminderEmail(Base):
@@ -120,7 +124,9 @@ class ReminderEmail(Base):
     subject: Mapped[str] = mapped_column(String(255), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     tone: Mapped[Tone] = mapped_column(SqlEnum(Tone), default=Tone.PROFESSIONAL, nullable=False)
-    status: Mapped[EmailStatus] = mapped_column(SqlEnum(EmailStatus), default=EmailStatus.PENDING_APPROVAL, nullable=False)
+    status: Mapped[EmailStatus] = mapped_column(
+        SqlEnum(EmailStatus), default=EmailStatus.PENDING_APPROVAL, nullable=False
+    )
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     channel: Mapped[str] = mapped_column(String(20), default="email", nullable=False)
@@ -131,6 +137,8 @@ class ReminderEmail(Base):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     opened_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     clicked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    bounced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    spam_reported_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     click_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     tone_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     tone_factors_json: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -149,7 +157,9 @@ class AuditLog(Base):
     entity_type: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     details_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False, index=True
+    )
 
 
 class JobQueue(Base):
@@ -163,9 +173,13 @@ class JobQueue(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued", index=True)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
-    available_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False, index=True
+    )
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False, index=True
+    )
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
@@ -179,7 +193,9 @@ class WebhookEvent(Base):
     event_key: Mapped[str] = mapped_column(String(140), nullable=False)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     processed: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False, index=True
+    )
 
 
 class RefreshToken(Base):
@@ -190,7 +206,9 @@ class RefreshToken(Base):
     token_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     revoked: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False, index=True
+    )
 
 
 class RevokedAccessToken(Base):
@@ -199,4 +217,6 @@ class RevokedAccessToken(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     jti: Mapped[str] = mapped_column(String(80), nullable=False, unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False, index=True
+    )

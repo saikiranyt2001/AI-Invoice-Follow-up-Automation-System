@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from datetime import datetime, timedelta
-from typing import Awaitable, Callable
+from typing import Callable
 
 from app.time_utils import utcnow
 
@@ -51,7 +51,9 @@ class AutomationScheduler:
                     self._tick()
                     self._last_success_at = utcnow()
                     self._last_error = None
-                except Exception as exc:  # pragma: no cover - handled by caller logging/tests through state
+                except (
+                    Exception
+                ) as exc:  # pragma: no cover - handled by caller logging/tests through state
                     self._last_error = str(exc)
                 finally:
                     self._next_run_at = utcnow() + timedelta(seconds=self._interval_seconds)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, datetime
 import secrets
+from datetime import date
 
 from sqlalchemy.orm import Session
 
@@ -18,8 +18,18 @@ def build_payment_link(invoice: Invoice) -> str:
     if not invoice.payment_token:
         invoice.payment_token = secrets.token_urlsafe(18)
     settings = get_settings()
+    token = invoice.payment_token
+    provider = settings.payment_provider.lower().strip()
+
+    if provider == "stripe":
+        base = settings.stripe_payment_link_base_url.rstrip("/")
+        return f"{base}?invoice_id={invoice.id}&token={token}&amount={invoice.amount:.2f}"
+    if provider == "razorpay":
+        base = settings.razorpay_payment_link_base_url.rstrip("/")
+        return f"{base}?invoice_id={invoice.id}&token={token}&amount={invoice.amount:.2f}"
+
     base = settings.payment_link_base_url.rstrip("/")
-    return f"{base}/{invoice.payment_token}?invoice_id={invoice.id}&amount={invoice.amount:.2f}"
+    return f"{base}/{token}?invoice_id={invoice.id}&amount={invoice.amount:.2f}"
 
 
 def ensure_payment_token(db: Session, invoice: Invoice) -> str:

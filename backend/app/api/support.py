@@ -1,12 +1,21 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 import json
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AuditLog, Company, CompanyMembership, Invoice, JobQueue, RefreshToken, ReminderEmail, User
+from app.models import (
+    AuditLog,
+    Company,
+    CompanyMembership,
+    Invoice,
+    JobQueue,
+    RefreshToken,
+    ReminderEmail,
+    User,
+)
 from app.schemas import InvoiceOut, TokenOut
 from app.security import create_access_token, hash_refresh_token, refresh_token_raw
 from app.services.invoice_service import build_payment_link, ensure_payment_token, is_overdue
@@ -100,7 +109,9 @@ def _default_company_name(user: User) -> str:
 
 
 def _company_accessible(db: Session, user: User, company_id: int) -> bool:
-    owns = db.scalar(select(Company.id).where(Company.id == company_id, Company.owner_user_id == user.id))
+    owns = db.scalar(
+        select(Company.id).where(Company.id == company_id, Company.owner_user_id == user.id)
+    )
     if owns:
         return True
     member = db.scalar(
@@ -114,11 +125,17 @@ def _company_accessible(db: Session, user: User, company_id: int) -> bool:
 
 def _get_accessible_companies(db: Session, user: User) -> list[Company]:
     owned_ids = db.scalars(select(Company.id).where(Company.owner_user_id == user.id)).all()
-    member_ids = db.scalars(select(CompanyMembership.company_id).where(CompanyMembership.user_id == user.id)).all()
+    member_ids = db.scalars(
+        select(CompanyMembership.company_id).where(CompanyMembership.user_id == user.id)
+    ).all()
     ids = sorted(set([*owned_ids, *member_ids]))
     if not ids:
         return []
-    return db.scalars(select(Company).where(Company.id.in_(ids)).order_by(Company.created_at.asc(), Company.id.asc())).all()
+    return db.scalars(
+        select(Company)
+        .where(Company.id.in_(ids))
+        .order_by(Company.created_at.asc(), Company.id.asc())
+    ).all()
 
 
 def get_active_company(db: Session, user: User) -> Company:
@@ -141,7 +158,9 @@ def get_active_company(db: Session, user: User) -> Company:
         {Invoice.company_id: active.id},
         synchronize_session=False,
     )
-    db.query(ReminderEmail).filter(ReminderEmail.user_id == user.id, ReminderEmail.company_id.is_(None)).update(
+    db.query(ReminderEmail).filter(
+        ReminderEmail.user_id == user.id, ReminderEmail.company_id.is_(None)
+    ).update(
         {ReminderEmail.company_id: active.id},
         synchronize_session=False,
     )

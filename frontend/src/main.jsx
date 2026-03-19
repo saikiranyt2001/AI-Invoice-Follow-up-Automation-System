@@ -17,13 +17,13 @@ if (import.meta.env.DEV) {
       root.render(
         <React.StrictMode>
           <App />
-        </React.StrictMode>
+        </React.StrictMode>,
       );
     });
 } else {
   root.render(
     <React.StrictMode>
       <App />
-    </React.StrictMode>
+    </React.StrictMode>,
   );
 }

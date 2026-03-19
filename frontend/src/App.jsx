@@ -1,13 +1,54 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Line, Bar } from "react-chartjs-2";
-import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, BarElement, Title, Tooltip, Legend } from "chart.js";
-import { api, getAuthToken, getRefreshToken, setAuthToken, setRefreshToken } from "./api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+} from "chart.js";
+import {
+  api,
+  getAuthToken,
+  getRefreshToken,
+  setAuthToken,
+  setRefreshToken,
+} from "./api";
+import { DashboardSnapshotPanels } from "./components/DashboardSnapshotPanels";
+import { IntegrationsSection } from "./components/IntegrationsSection";
+import { OpsSection } from "./components/OpsSection";
+import { ReportsSection } from "./components/ReportsSection";
+import { RolePermissionsPanel } from "./components/RolePermissionsPanel";
+import { TeamSection } from "./components/TeamSection";
+import { EmptyState, StatusBadge, Toast, TrendMiniBars } from "./components/ui";
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Title, Tooltip, Legend);
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+);
 
 const TONES = ["friendly", "professional", "strict"];
 const DELIVERY_PROVIDERS = ["smtp", "twilio_sms", "twilio_whatsapp"];
-const TWILIO_STATUSES = ["queued", "accepted", "sending", "sent", "delivered", "read", "undelivered", "failed", "canceled"];
+const TWILIO_STATUSES = [
+  "queued",
+  "accepted",
+  "sending",
+  "sent",
+  "delivered",
+  "read",
+  "undelivered",
+  "failed",
+  "canceled",
+];
 
 const initialInvoiceForm = {
   customer_name: "",
@@ -28,24 +69,77 @@ const initialTeamForm = {
   username: "",
   email: "",
   password: "",
-  role: "team",
+  role: "viewer",
 };
 
-const TEAM_ROLES = ["team", "accountant", "manager", "admin"];
+const TEAM_ROLES = ["viewer", "accountant", "admin"];
+const RBAC_ROLES = ["admin", "accountant", "viewer"];
 const TEAM_FILTER_MODES = ["all", "owners", "members", "you"];
 const TEAM_SORT_KEYS = ["username", "role", "access"];
 const TEAM_VIEW_PRESETS = [
-  { key: "all-default", label: "All Members", filter: "all", sortKey: "username", sortDir: "asc", search: "" },
-  { key: "review-owners", label: "Review Owners", filter: "owners", sortKey: "access", sortDir: "asc", search: "" },
-  { key: "my-access", label: "My Access", filter: "you", sortKey: "access", sortDir: "asc", search: "" },
-  { key: "member-audit", label: "Member Audit", filter: "members", sortKey: "role", sortDir: "asc", search: "" },
+  {
+    key: "all-default",
+    label: "All Members",
+    filter: "all",
+    sortKey: "username",
+    sortDir: "asc",
+    search: "",
+  },
+  {
+    key: "review-owners",
+    label: "Review Owners",
+    filter: "owners",
+    sortKey: "access",
+    sortDir: "asc",
+    search: "",
+  },
+  {
+    key: "my-access",
+    label: "My Access",
+    filter: "you",
+    sortKey: "access",
+    sortDir: "asc",
+    search: "",
+  },
+  {
+    key: "member-audit",
+    label: "Member Audit",
+    filter: "members",
+    sortKey: "role",
+    sortDir: "asc",
+    search: "",
+  },
 ];
 const ROLE_LABELS = {
   admin: "Admin Control Mode",
-  manager: "Manager Oversight Mode",
   accountant: "Accounting Focus Mode",
-  team: "Team Execution Mode",
+  viewer: "Viewer Read-Only Mode",
 };
+
+function normalizeRole(role) {
+  const raw = String(role || "").toLowerCase();
+  if (raw === "team") {
+    return "viewer";
+  }
+  if (raw === "manager") {
+    return "accountant";
+  }
+  if (["admin", "accountant", "viewer"].includes(raw)) {
+    return raw;
+  }
+  return "viewer";
+}
+
+function displayRole(role) {
+  const normalized = normalizeRole(role);
+  if (normalized === "admin") {
+    return "Admin";
+  }
+  if (normalized === "accountant") {
+    return "Accountant";
+  }
+  return "Viewer";
+}
 
 const AUDIENCE_MODES = [
   { key: "cfo", label: "CFO" },
@@ -65,12 +159,18 @@ const AUDIENCE_COPY = {
       "Track delivery outcomes and overdue exposure against policy.",
     ],
     empty: {
-      invoices: "Start by adding receivables to establish baseline exposure and collection forecasting.",
-      approvals: "Drafts requiring governance review will be listed here before release.",
-      insights: "Risk intelligence appears as payment behavior history becomes statistically meaningful.",
-      customers: "Customer behavior and risk trends will appear once invoice history is available.",
-      history: "Delivery records and failure reasons appear after first approved dispatch.",
-      integrations: "Connect ERP/accounting sources to automate receivable ingestion.",
+      invoices:
+        "Start by adding receivables to establish baseline exposure and collection forecasting.",
+      approvals:
+        "Drafts requiring governance review will be listed here before release.",
+      insights:
+        "Risk intelligence appears as payment behavior history becomes statistically meaningful.",
+      customers:
+        "Customer behavior and risk trends will appear once invoice history is available.",
+      history:
+        "Delivery records and failure reasons appear after first approved dispatch.",
+      integrations:
+        "Connect ERP/accounting sources to automate receivable ingestion.",
       team: "Provision accountable operators to enforce separation of duties.",
     },
   },
@@ -85,12 +185,18 @@ const AUDIENCE_COPY = {
       "Approve and dispatch, then monitor outcomes in Email History.",
     ],
     empty: {
-      invoices: "Create an invoice or upload CSV to initialize automated follow-up workflows.",
-      approvals: "New reminder drafts will appear here for policy-compliant review and release.",
-      insights: "Risk intelligence will appear once the platform collects enough payment behavior data.",
-      customers: "Customer behavior trends are shown as soon as invoices and payments are tracked.",
-      history: "Approve and send a reminder to begin tracking delivery outcomes and retries.",
-      integrations: "Configure connectors to streamline invoice ingestion from external finance systems.",
+      invoices:
+        "Create an invoice or upload CSV to initialize automated follow-up workflows.",
+      approvals:
+        "New reminder drafts will appear here for policy-compliant review and release.",
+      insights:
+        "Risk intelligence will appear once the platform collects enough payment behavior data.",
+      customers:
+        "Customer behavior trends are shown as soon as invoices and payments are tracked.",
+      history:
+        "Approve and send a reminder to begin tracking delivery outcomes and retries.",
+      integrations:
+        "Configure connectors to streamline invoice ingestion from external finance systems.",
       team: "Add manager or accountant users to distribute approvals and collection operations.",
     },
   },
@@ -105,69 +211,22 @@ const AUDIENCE_COPY = {
       "Approve and send reminders, then track results instantly.",
     ],
     empty: {
-      invoices: "Add your first invoice to start sending smart payment reminders.",
-      approvals: "When you create reminder drafts, they will appear here for quick approval.",
-      insights: "As you send more reminders, we will highlight risky late-paying customers.",
-      customers: "Customer payment history and risk trend lines will appear after your first invoices.",
-      history: "Your sent and failed reminders will be listed here after first send.",
-      integrations: "Connect tools like accounting systems to import invoices automatically.",
+      invoices:
+        "Add your first invoice to start sending smart payment reminders.",
+      approvals:
+        "When you create reminder drafts, they will appear here for quick approval.",
+      insights:
+        "As you send more reminders, we will highlight risky late-paying customers.",
+      customers:
+        "Customer payment history and risk trend lines will appear after your first invoices.",
+      history:
+        "Your sent and failed reminders will be listed here after first send.",
+      integrations:
+        "Connect tools like accounting systems to import invoices automatically.",
       team: "Invite teammates to share reminder and approval work.",
     },
   },
 };
-
-function StatusBadge({ label, variant }) {
-  return <span className={`badge ${variant}`}>{label}</span>;
-}
-
-function TrendMiniBars({ points }) {
-  if (!points?.length) {
-    return <span className="trend-empty">No trend yet</span>;
-  }
-
-  return (
-    <div className="trend-mini" title={points.map((p) => `${p.month}: ${p.risk_score}`).join(" | ")}>
-      {points.map((point) => (
-        <span key={`${point.month}-${point.risk_score}`} style={{ height: `${Math.max(8, point.risk_score)}%` }} />
-      ))}
-    </div>
-  );
-}
-
-function EmptyState({ title, description, tone = "default" }) {
-  return (
-    <div className={`empty-cell empty-${tone}`}>
-      <div className="empty-illustration" aria-hidden="true">
-        <span />
-        <span />
-        <span />
-      </div>
-      <strong>{title}</strong>
-      <span>{description}</span>
-    </div>
-  );
-}
-
-function Toast({ message, type = "success", onClose }) {
-  return (
-    <div 
-      className={`toast toast-${type}`} 
-      role="status" 
-      aria-live="polite"
-      aria-atomic="true"
-    >
-      <span className="toast-icon">{type === "success" ? "✓" : type === "error" ? "✕" : "ℹ"}</span>
-      <span className="toast-message">{message}</span>
-      <button 
-        className="toast-close" 
-        onClick={onClose}
-        aria-label="Close notification"
-      >
-        ×
-      </button>
-    </div>
-  );
-}
 
 function App() {
   const [currentUser, setCurrentUser] = useState(null);
@@ -182,6 +241,7 @@ function App() {
   const [latePayerInsights, setLatePayerInsights] = useState([]);
   const [customerHistory, setCustomerHistory] = useState([]);
   const [reportsOverview, setReportsOverview] = useState(null);
+  const [emailAnalytics, setEmailAnalytics] = useState(null);
   const [companies, setCompanies] = useState([]);
   const [newCompanyName, setNewCompanyName] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
@@ -195,7 +255,12 @@ function App() {
   const [integrationSources, setIntegrationSources] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
   const [queueJobs, setQueueJobs] = useState([]);
-  const [queueStats, setQueueStats] = useState({ queued: 0, processing: 0, succeeded: 0, failed: 0 });
+  const [queueStats, setQueueStats] = useState({
+    queued: 0,
+    processing: 0,
+    succeeded: 0,
+    failed: 0,
+  });
   const [opsMetrics, setOpsMetrics] = useState(null);
   const [invoiceForm, setInvoiceForm] = useState(initialInvoiceForm);
   const [teamForm, setTeamForm] = useState(initialTeamForm);
@@ -231,14 +296,7 @@ function App() {
     overdue_invoices: 0,
   });
   const [toasts, setToasts] = useState([]);
-  const [loadingStates, setLoadingStates] = useState({
-    dashboard: false,
-    reports: false,
-    auth: false,
-    email: false,
-    queue: false,
-    team: false,
-  });
+  const [permissionsRoleTab, setPermissionsRoleTab] = useState("viewer");
   const teamSearchInputRef = useRef(null);
 
   const addToast = (message, type = "success", duration = 3000) => {
@@ -247,10 +305,6 @@ function App() {
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, duration);
-  };
-
-  const setLoadingState = (key, value) => {
-    setLoadingStates((prev) => ({ ...prev, [key]: value }));
   };
 
   const notify = (nextMessage, type = "info") => {
@@ -273,12 +327,56 @@ function App() {
     [currentUser?.id],
   );
 
-  const overdueIds = useMemo(() => new Set(overdue.map((item) => item.id)), [overdue]);
-  const roleKey = (currentUser?.role || "team").toLowerCase();
+  const overdueIds = useMemo(
+    () => new Set(overdue.map((item) => item.id)),
+    [overdue],
+  );
+  const roleKey = normalizeRole(currentUser?.role);
+  const isAdmin = roleKey === "admin";
+  const canEditOperations = roleKey === "admin" || roleKey === "accountant";
   const roleLabel = ROLE_LABELS[roleKey] || "Operations Mode";
+  const permissionsByRole = useMemo(
+    () => ({
+      admin: {
+        "View invoices, reminders, and reports": true,
+        "Create or upload invoices": true,
+        "Generate and edit reminder drafts": true,
+        "Approve, reject, or send reminders": true,
+        "Mark invoices as paid": true,
+        "Run integrations (connect, sync, import)": true,
+        "Manage users and Ops controls": true,
+      },
+      accountant: {
+        "View invoices, reminders, and reports": true,
+        "Create or upload invoices": true,
+        "Generate and edit reminder drafts": true,
+        "Approve, reject, or send reminders": true,
+        "Mark invoices as paid": true,
+        "Run integrations (connect, sync, import)": true,
+        "Manage users and Ops controls": false,
+      },
+      viewer: {
+        "View invoices, reminders, and reports": true,
+        "Create or upload invoices": false,
+        "Generate and edit reminder drafts": false,
+        "Approve, reject, or send reminders": false,
+        "Mark invoices as paid": false,
+        "Run integrations (connect, sync, import)": false,
+        "Manage users and Ops controls": false,
+      },
+    }),
+    [],
+  );
+  const permissionCapabilities = useMemo(
+    () => Object.keys(permissionsByRole.admin),
+    [permissionsByRole],
+  );
   const audience = AUDIENCE_COPY[audienceMode] || AUDIENCE_COPY.ops;
   const activeCompany = useMemo(
-    () => companies.find((company) => company.id === currentUser?.active_company_id) || null,
+    () =>
+      companies.find(
+        (company) => company.id === currentUser?.active_company_id,
+      ) || null,
     [companies, currentUser?.active_company_id],
   );
 
@@ -321,7 +419,11 @@ function App() {
           const username = String(user.username || "").toLowerCase();
           const email = String(user.email || "").toLowerCase();
           const role = String(user.role || "").toLowerCase();
-          return username.includes(query) || email.includes(query) || role.includes(query);
+          return (
+            username.includes(query) ||
+            email.includes(query) ||
+            role.includes(query)
+          );
         })
       : roleFiltered;
 
@@ -337,21 +439,34 @@ function App() {
       }
       return a.id - b.id;
     });
-  }, [teamUsers, teamSearchTerm, teamFilterMode, teamSortKey, teamSortDir, activeCompany?.owner_user_id, currentUser?.id]);
+  }, [
+    teamUsers,
+    teamSearchTerm,
+    teamFilterMode,
+    teamSortKey,
+    teamSortDir,
+    activeCompany?.owner_user_id,
+    currentUser?.id,
+  ]);
 
   const kpiVisuals = useMemo(() => {
     const total = invoices.length || stats?.total_invoices || 0;
-    const paidCount = invoices.filter((invoice) => invoice.status === "paid").length;
+    const paidCount = invoices.filter(
+      (invoice) => invoice.status === "paid",
+    ).length;
     const pendingCount = Math.max(0, total - paidCount);
     const overdueCount = overdue.length || stats?.overdue_invoices || 0;
     const followedUpCount = emailHistory.filter((email) =>
-      ["approved", "sent", "delivered", "opened", "failed"].includes(email.status),
+      ["approved", "sent", "delivered", "opened", "failed"].includes(
+        email.status,
+      ),
     ).length;
 
     const paidPct = total > 0 ? Math.round((paidCount / total) * 100) : 0;
     const pendingPct = total > 0 ? Math.round((pendingCount / total) * 100) : 0;
     const overduePct = total > 0 ? Math.round((overdueCount / total) * 100) : 0;
-    const followUpPct = total > 0 ? Math.round((followedUpCount / total) * 100) : 0;
+    const followUpPct =
+      total > 0 ? Math.round((followedUpCount / total) * 100) : 0;
 
     return {
       paidPct,
@@ -363,9 +478,15 @@ function App() {
 
   const followUpSummary = useMemo(() => {
     const draftCount = pendingApprovals.length;
-    const sentCount = emailHistory.filter((email) => ["sent", "delivered", "opened"].includes(email.status)).length;
-    const openedCount = emailHistory.filter((email) => email.status === "opened").length;
-    const failedCount = emailHistory.filter((email) => email.status === "failed").length;
+    const sentCount = emailHistory.filter((email) =>
+      ["sent", "delivered", "opened"].includes(email.status),
+    ).length;
+    const openedCount = emailHistory.filter(
+      (email) => email.status === "opened",
+    ).length;
+    const failedCount = emailHistory.filter(
+      (email) => email.status === "failed",
+    ).length;
 
     return {
       draftCount,
@@ -374,6 +495,10 @@ function App() {
       failedCount,
     };
   }, [emailHistory, pendingApprovals]);
+
+  useEffect(() => {
+    setPermissionsRoleTab(roleKey);
+  }, [roleKey]);
 
   useEffect(() => {
     async function bootstrapAuth() {
@@ -398,7 +523,7 @@ function App() {
     bootstrapAuth();
   }, []);
 
-  async function loadData() {
+  const loadData = useCallback(async () => {
     setLoading(true);
     setMessage("");
     try {
@@ -412,6 +537,7 @@ function App() {
         insightsData,
         customerHistoryData,
         reportsData,
+        emailAnalyticsData,
         connectorData,
         sourceData,
       ] = await Promise.all([
@@ -424,6 +550,7 @@ function App() {
         api.getLatePayerInsights(),
         api.getCustomerHistory(),
         api.getReportsOverview(),
+        api.getEmailAnalytics(),
         api.getIntegrationConnectors(),
         api.getIntegrationSources(),
       ]);
@@ -437,10 +564,11 @@ function App() {
       setLatePayerInsights(insightsData);
       setCustomerHistory(customerHistoryData);
       setReportsOverview(reportsData);
+      setEmailAnalytics(emailAnalyticsData);
       setIntegrationConnectors(connectorData);
       setIntegrationSources(sourceData.sources || []);
 
-      if (currentUser?.role === "admin") {
+      if (isAdmin) {
         try {
           const [users, logs, jobs, qstats, metrics] = await Promise.all([
             api.getTeamUsers(),
@@ -473,7 +601,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [isAdmin]);
 
   useEffect(() => {
     if (!currentUser) {
@@ -485,7 +613,7 @@ function App() {
     // Bonus: real-time-like dashboard refresh every 15s.
     const interval = setInterval(loadData, 15000);
     return () => clearInterval(interval);
-  }, [currentUser]);
+  }, [currentUser, loadData]);
 
   useEffect(() => {
     if (!teamPrefsStorageKey) {
@@ -534,10 +662,16 @@ function App() {
     } catch {
       // Ignore storage write failures.
     }
-  }, [teamPrefsStorageKey, teamFilterMode, teamSortKey, teamSortDir, teamSearchTerm]);
+  }, [
+    teamPrefsStorageKey,
+    teamFilterMode,
+    teamSortKey,
+    teamSortDir,
+    teamSearchTerm,
+  ]);
 
   useEffect(() => {
-    if (activeTab !== "team" || currentUser?.role !== "admin") {
+    if (activeTab !== "team" || !isAdmin) {
       return;
     }
 
@@ -549,10 +683,10 @@ function App() {
       const target = event.target;
       const tagName = target?.tagName?.toLowerCase();
       const isTypingTarget =
-        tagName === "input"
-        || tagName === "textarea"
-        || tagName === "select"
-        || target?.isContentEditable;
+        tagName === "input" ||
+        tagName === "textarea" ||
+        tagName === "select" ||
+        target?.isContentEditable;
 
       if (event.key === "/" && !isTypingTarget) {
         event.preventDefault();
@@ -583,7 +717,17 @@ function App() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeTab, currentUser?.role, teamPrefsStorageKey, teamFilterMode, teamSortKey, teamSortDir, teamSearchTerm]);
+  }, [
+    activeTab,
+    applyTeamPreset,
+    isAdmin,
+    resetTeamView,
+    teamFilterMode,
+    teamPrefsStorageKey,
+    teamSearchTerm,
+    teamSortDir,
+    teamSortKey,
+  ]);
 
   useEffect(() => {
     if (!stats) {
@@ -597,7 +741,9 @@ function App() {
     }
 
     const totalInvoices = invoices.length || stats.total_invoices || 0;
-    const paidInvoices = invoices.filter((invoice) => invoice.status === "paid").length;
+    const paidInvoices = invoices.filter(
+      (invoice) => invoice.status === "paid",
+    ).length;
     const pendingInvoices = Math.max(0, totalInvoices - paidInvoices);
 
     const target = {
@@ -648,7 +794,10 @@ function App() {
               otp_code: authForm.otp_code || undefined,
             };
 
-      const response = authMode === "signup" ? await api.signup(payload) : await api.login(payload);
+      const response =
+        authMode === "signup"
+          ? await api.signup(payload)
+          : await api.login(payload);
       setAuthToken(response.access_token);
       setRefreshToken(response.refresh_token || "");
       setCurrentUser(response.user);
@@ -679,6 +828,7 @@ function App() {
     setLatePayerInsights([]);
     setCustomerHistory([]);
     setReportsOverview(null);
+    setEmailAnalytics(null);
     setIntegrationConnectors([]);
     setCompanies([]);
     setAuditLogs([]);
@@ -691,7 +841,10 @@ function App() {
   async function handleRunQueueNow() {
     try {
       const result = await api.runQueueNow(25);
-      notify(`Queue run: picked ${result.picked}, succeeded ${result.succeeded}, failed ${result.failed}.`, "success");
+      notify(
+        `Queue run: picked ${result.picked}, succeeded ${result.succeeded}, failed ${result.failed}.`,
+        "success",
+      );
       loadData();
     } catch (error) {
       notify(error.message || "Unable to run queue now", "error");
@@ -719,6 +872,13 @@ function App() {
 
   async function handleCreateInvoice(event) {
     event.preventDefault();
+    if (!canEditOperations) {
+      notify(
+        "Viewer access is read-only. Ask an admin to grant Accountant role for write actions.",
+        "info",
+      );
+      return;
+    }
     try {
       await api.createInvoice({
         ...invoiceForm,
@@ -733,13 +893,21 @@ function App() {
   }
 
   async function handleInvoiceUpload(event) {
+    if (!canEditOperations) {
+      notify("Viewer access is read-only. Invoice upload is disabled.", "info");
+      event.target.value = "";
+      return;
+    }
     const file = event.target.files?.[0];
     if (!file) {
       return;
     }
     try {
       const result = await api.uploadInvoicesFile(file);
-      notify(`Imported ${result.created_count} invoices from ${file.name}.`, "success");
+      notify(
+        `Imported ${result.created_count} invoices from ${file.name}.`,
+        "success",
+      );
       loadData();
     } catch (error) {
       notify(error.message || "Invoice upload failed", "error");
@@ -749,6 +917,13 @@ function App() {
   }
 
   async function handleGenerateEmail() {
+    if (!canEditOperations) {
+      notify(
+        "Viewer access is read-only. Reminder generation is disabled.",
+        "info",
+      );
+      return;
+    }
     if (!selectedInvoiceId) {
       notify("Select an invoice first.", "info");
       return;
@@ -772,6 +947,10 @@ function App() {
   }
 
   async function handleApprove(id) {
+    if (!canEditOperations) {
+      notify("Viewer access is read-only. Email approval is disabled.", "info");
+      return;
+    }
     try {
       await api.approveEmail(id, deliveryProvider);
       notify(`Email approved and queued via ${deliveryProvider}.`, "success");
@@ -783,6 +962,13 @@ function App() {
   }
 
   async function handleReject(id) {
+    if (!canEditOperations) {
+      notify(
+        "Viewer access is read-only. Email rejection is disabled.",
+        "info",
+      );
+      return;
+    }
     try {
       await api.rejectEmail(id);
       notify("Email rejected.", "success");
@@ -794,6 +980,13 @@ function App() {
   }
 
   async function handleSendNow(id) {
+    if (!canEditOperations) {
+      notify(
+        "Viewer access is read-only. Sending reminders is disabled.",
+        "info",
+      );
+      return;
+    }
     try {
       await api.sendEmail(id, deliveryProvider);
       notify(`Email queued via ${deliveryProvider}.`, "success");
@@ -829,12 +1022,22 @@ function App() {
   }
 
   async function handleImportFromIntegration() {
+    if (!canEditOperations) {
+      notify(
+        "Viewer access is read-only. Integration import is disabled.",
+        "info",
+      );
+      return;
+    }
     try {
       const created = await api.importIntegrationInvoices({
         source: integrationSource,
         count: Number(integrationCount),
       });
-      notify(`Imported ${created.length} invoices from ${integrationSource}.`, "success");
+      notify(
+        `Imported ${created.length} invoices from ${integrationSource}.`,
+        "success",
+      );
       loadData();
     } catch (error) {
       notify(error.message || "Integration import failed", "error");
@@ -842,9 +1045,18 @@ function App() {
   }
 
   async function handleConnectIntegration(provider) {
+    if (!canEditOperations) {
+      notify(
+        "Viewer access is read-only. Integration changes are disabled.",
+        "info",
+      );
+      return;
+    }
     try {
       const started = await api.startIntegrationOAuth(provider);
-      const isLiveQuickBooks = provider === "quickbooks" && started.auth_url.includes("appcenter.intuit.com");
+      const isLiveQuickBooks =
+        provider === "quickbooks" &&
+        started.auth_url.includes("appcenter.intuit.com");
 
       if (isLiveQuickBooks) {
         window.open(started.auth_url, "_blank", "noopener,noreferrer");
@@ -861,10 +1073,18 @@ function App() {
           "Paste the 'state' query parameter from the redirect URL (or keep default):",
           started.state,
         );
-        await api.completeIntegrationOAuth(provider, code, stateInput || started.state);
+        await api.completeIntegrationOAuth(
+          provider,
+          code,
+          stateInput || started.state,
+        );
         notify("quickbooks connected (live OAuth).", "success");
       } else {
-        await api.completeIntegrationOAuth(provider, "demo-code", started.state);
+        await api.completeIntegrationOAuth(
+          provider,
+          "demo-code",
+          started.state,
+        );
         notify(`${provider} connected (OAuth scaffold).`, "success");
       }
 
@@ -875,6 +1095,13 @@ function App() {
   }
 
   async function handleDisconnectIntegration(provider) {
+    if (!canEditOperations) {
+      notify(
+        "Viewer access is read-only. Integration changes are disabled.",
+        "info",
+      );
+      return;
+    }
     try {
       await api.disconnectIntegration(provider);
       notify(`${provider} disconnected.`, "success");
@@ -885,8 +1112,18 @@ function App() {
   }
 
   async function handleSyncIntegration(provider) {
+    if (!canEditOperations) {
+      notify(
+        "Viewer access is read-only. Integration sync is disabled.",
+        "info",
+      );
+      return;
+    }
     try {
-      const created = await api.syncIntegrationInvoices(provider, Number(integrationCount) || 5);
+      const created = await api.syncIntegrationInvoices(
+        provider,
+        Number(integrationCount) || 5,
+      );
       notify(`Synced ${created.length} invoices from ${provider}.`, "success");
       loadData();
     } catch (error) {
@@ -922,7 +1159,10 @@ function App() {
     try {
       await api.inviteToActiveCompany(email);
       setInviteEmail("");
-      notify(`User ${email} invited to ${activeCompany?.name || "active company"}.`, "success");
+      notify(
+        `User ${email} invited to ${activeCompany?.name || "active company"}.`,
+        "success",
+      );
       loadData();
     } catch (error) {
       notify(error.message || "Unable to invite user", "error");
@@ -930,7 +1170,9 @@ function App() {
   }
 
   async function handleRemoveMember(userId, username) {
-    const confirmed = window.confirm(`Remove ${username} from ${activeCompany?.name || "this company"}?`);
+    const confirmed = window.confirm(
+      `Remove ${username} from ${activeCompany?.name || "this company"}?`,
+    );
     if (!confirmed) {
       return;
     }
@@ -960,14 +1202,14 @@ function App() {
     return teamSortDir === "asc" ? "▲" : "▼";
   }
 
-  function applyTeamPreset(preset) {
+  const applyTeamPreset = useCallback((preset) => {
     setTeamFilterMode(preset.filter);
     setTeamSortKey(preset.sortKey);
     setTeamSortDir(preset.sortDir);
     setTeamSearchTerm(preset.search);
-  }
+  }, []);
 
-  function resetTeamView() {
+  const resetTeamView = useCallback(() => {
     const defaultPreset = TEAM_VIEW_PRESETS[0];
     applyTeamPreset(defaultPreset);
 
@@ -978,10 +1220,17 @@ function App() {
         // Ignore storage cleanup failures.
       }
     }
-  }
+  }, [applyTeamPreset, teamPrefsStorageKey]);
 
   async function handleCreateCompany(event) {
     event.preventDefault();
+    if (!canEditOperations) {
+      notify(
+        "Viewer access is read-only. Company creation is disabled.",
+        "info",
+      );
+      return;
+    }
     const trimmedName = newCompanyName.trim();
     if (!trimmedName) {
       notify("Company name is required.", "info");
@@ -992,7 +1241,7 @@ function App() {
       const created = await api.createCompany({ name: trimmedName });
       setCompanies((prev) => [...prev, created]);
       setNewCompanyName("");
-      notify(`Company \"${created.name}\" created.`, "success");
+      notify(`Company "${created.name}" created.`, "success");
     } catch (error) {
       notify(error.message || "Unable to create company", "error");
     }
@@ -1018,6 +1267,10 @@ function App() {
   }
 
   async function handleMarkPaid(invoiceId) {
+    if (!canEditOperations) {
+      notify("Viewer access is read-only. Mark paid is disabled.", "info");
+      return;
+    }
     try {
       const ref = `MANUAL-${invoiceId}-${Date.now()}`;
       await api.markInvoicePaid(invoiceId, ref);
@@ -1051,7 +1304,9 @@ function App() {
             className="theme-toggle"
             aria-label="Toggle dark mode"
             aria-pressed={themeMode === "dark"}
-            onClick={() => setThemeMode((prev) => (prev === "dark" ? "light" : "dark"))}
+            onClick={() =>
+              setThemeMode((prev) => (prev === "dark" ? "light" : "dark"))
+            }
           >
             Theme: {themeMode === "dark" ? "Dark" : "Light"}
           </button>
@@ -1066,7 +1321,9 @@ function App() {
               <input
                 placeholder="Username"
                 value={authForm.username}
-                onChange={(e) => setAuthForm((prev) => ({ ...prev, username: e.target.value }))}
+                onChange={(e) =>
+                  setAuthForm((prev) => ({ ...prev, username: e.target.value }))
+                }
                 required
               />
             )}
@@ -1074,14 +1331,18 @@ function App() {
               type="email"
               placeholder="Email"
               value={authForm.email}
-              onChange={(e) => setAuthForm((prev) => ({ ...prev, email: e.target.value }))}
+              onChange={(e) =>
+                setAuthForm((prev) => ({ ...prev, email: e.target.value }))
+              }
               required
             />
             <input
               type="password"
               placeholder="Password"
               value={authForm.password}
-              onChange={(e) => setAuthForm((prev) => ({ ...prev, password: e.target.value }))}
+              onChange={(e) =>
+                setAuthForm((prev) => ({ ...prev, password: e.target.value }))
+              }
               required
               minLength={8}
             />
@@ -1090,20 +1351,30 @@ function App() {
                 type="text"
                 placeholder="OTP Code (if MFA enabled)"
                 value={authForm.otp_code}
-                onChange={(e) => setAuthForm((prev) => ({ ...prev, otp_code: e.target.value }))}
+                onChange={(e) =>
+                  setAuthForm((prev) => ({ ...prev, otp_code: e.target.value }))
+                }
                 minLength={6}
                 maxLength={8}
               />
             )}
-            <button type="submit">{authMode === "signup" ? "Sign Up" : "Login"}</button>
+            <button type="submit">
+              {authMode === "signup" ? "Sign Up" : "Login"}
+            </button>
           </form>
 
           <div className="auth-switch">
-            <span>{authMode === "signup" ? "Already have an account?" : "Need an account?"}</span>
+            <span>
+              {authMode === "signup"
+                ? "Already have an account?"
+                : "Need an account?"}
+            </span>
             <button
               type="button"
               className="ghost"
-              onClick={() => setAuthMode((prev) => (prev === "signup" ? "login" : "signup"))}
+              onClick={() =>
+                setAuthMode((prev) => (prev === "signup" ? "login" : "signup"))
+              }
             >
               {authMode === "signup" ? "Go to Login" : "Create Account"}
             </button>
@@ -1124,11 +1395,17 @@ function App() {
           className="theme-toggle"
           aria-label="Toggle dark mode"
           aria-pressed={themeMode === "dark"}
-          onClick={() => setThemeMode((prev) => (prev === "dark" ? "light" : "dark"))}
+          onClick={() =>
+            setThemeMode((prev) => (prev === "dark" ? "light" : "dark"))
+          }
         >
           Theme: {themeMode === "dark" ? "Dark" : "Light"}
         </button>
-        <div className="audience-switch" role="group" aria-label="Audience Profile">
+        <div
+          className="audience-switch"
+          role="group"
+          aria-label="Audience Profile"
+        >
           {AUDIENCE_MODES.map((item) => (
             <button
               key={item.key}
@@ -1142,7 +1419,7 @@ function App() {
         </div>
         <span className="role-chip">{roleLabel}</span>
         <p className="signed-in-user">
-          Signed in as {currentUser.username} ({currentUser.role})
+          Signed in as {currentUser.username} ({displayRole(currentUser.role)})
         </p>
         <div className="company-toolbar">
           <label>
@@ -1169,8 +1446,11 @@ function App() {
               value={newCompanyName}
               onChange={(e) => setNewCompanyName(e.target.value)}
               maxLength={120}
+              disabled={!canEditOperations}
             />
-            <button type="submit">Add Company</button>
+            <button type="submit" disabled={!canEditOperations}>
+              Add Company
+            </button>
           </form>
         </div>
         <p className="active-company-label">
@@ -1209,7 +1489,7 @@ function App() {
         >
           Integrations
         </button>
-        {currentUser.role === "admin" && (
+        {isAdmin && (
           <button
             className={activeTab === "ops" ? "active" : ""}
             onClick={() => setActiveTab("ops")}
@@ -1217,7 +1497,7 @@ function App() {
             Ops
           </button>
         )}
-        {currentUser.role === "admin" && (
+        {isAdmin && (
           <button
             className={activeTab === "team" ? "active" : ""}
             onClick={() => setActiveTab("team")}
@@ -1242,11 +1522,18 @@ function App() {
             </article>
             <article className="card success">
               <p>Paid vs Pending</p>
-              <h2>{stats ? `${displayStats.paid_invoices} / ${displayStats.pending_invoices}` : "-"}</h2>
+              <h2>
+                {stats
+                  ? `${displayStats.paid_invoices} / ${displayStats.pending_invoices}`
+                  : "-"}
+              </h2>
               <div className="kpi-spark">
                 <span style={{ width: `${kpiVisuals.paidPct}%` }} />
               </div>
-              <small>{kpiVisuals.paidPct}% paid, {kpiVisuals.pendingPct}% still pending</small>
+              <small>
+                {kpiVisuals.paidPct}% paid, {kpiVisuals.pendingPct}% still
+                pending
+              </small>
             </article>
             <article className="card warning">
               <p>Overdue Invoices</p>
@@ -1254,23 +1541,46 @@ function App() {
               <div className="kpi-spark">
                 <span style={{ width: `${kpiVisuals.overduePct}%` }} />
               </div>
-              <small>{kpiVisuals.overduePct}% of the invoice book is overdue</small>
+              <small>
+                {kpiVisuals.overduePct}% of the invoice book is overdue
+              </small>
             </article>
             <article className="card info">
               <p>Follow-up Status</p>
               <h2>{stats ? followUpSummary.sentCount : "-"}</h2>
               <div className="followup-status-grid">
-                <span className="followup-chip neutral">Drafts {followUpSummary.draftCount}</span>
-                <span className="followup-chip ok">Sent {followUpSummary.sentCount}</span>
-                <span className="followup-chip info">Opened {followUpSummary.openedCount}</span>
-                <span className="followup-chip danger">Failed {followUpSummary.failedCount}</span>
+                <span className="followup-chip neutral">
+                  Drafts {followUpSummary.draftCount}
+                </span>
+                <span className="followup-chip ok">
+                  Sent {followUpSummary.sentCount}
+                </span>
+                <span className="followup-chip info">
+                  Opened {followUpSummary.openedCount}
+                </span>
+                <span className="followup-chip danger">
+                  Failed {followUpSummary.failedCount}
+                </span>
               </div>
               <div className="kpi-spark">
                 <span style={{ width: `${kpiVisuals.followUpPct}%` }} />
               </div>
-              <small>{kpiVisuals.followUpPct}% of invoices have entered the follow-up pipeline</small>
+              <small>
+                {kpiVisuals.followUpPct}% of invoices have entered the follow-up
+                pipeline
+              </small>
             </article>
           </section>
+
+          <RolePermissionsPanel
+            currentUser={currentUser}
+            displayRole={displayRole}
+            permissionsRoleTab={permissionsRoleTab}
+            setPermissionsRoleTab={setPermissionsRoleTab}
+            permissionCapabilities={permissionCapabilities}
+            permissionsByRole={permissionsByRole}
+            rbacRoles={RBAC_ROLES}
+          />
 
           {(invoices.length === 0 || emailHistory.length === 0) && (
             <section className="panel onboarding-panel">
@@ -1283,64 +1593,32 @@ function App() {
             </section>
           )}
 
-          <section className="grid-two">
-            <article className="panel">
-              <h3>Invoice Health Snapshot</h3>
-              <div className="dashboard-snapshot">
-                <div className="snapshot-block">
-                  <span className="snapshot-label">Paid</span>
-                  <strong>{displayStats.paid_invoices}</strong>
-                </div>
-                <div className="snapshot-block">
-                  <span className="snapshot-label">Pending</span>
-                  <strong>{displayStats.pending_invoices}</strong>
-                </div>
-                <div className="snapshot-block">
-                  <span className="snapshot-label">Overdue</span>
-                  <strong>{displayStats.overdue_invoices}</strong>
-                </div>
-              </div>
-              <p className="snapshot-footnote">
-                Pending invoices are still outstanding. Overdue is the subset already past due.
-              </p>
-            </article>
-
-            <article className="panel">
-              <h3>Follow-up Pipeline</h3>
-              <div className="dashboard-snapshot">
-                <div className="snapshot-block">
-                  <span className="snapshot-label">Awaiting Approval</span>
-                  <strong>{followUpSummary.draftCount}</strong>
-                </div>
-                <div className="snapshot-block">
-                  <span className="snapshot-label">Sent/Delivered</span>
-                  <strong>{followUpSummary.sentCount}</strong>
-                </div>
-                <div className="snapshot-block">
-                  <span className="snapshot-label">Opened</span>
-                  <strong>{followUpSummary.openedCount}</strong>
-                </div>
-                <div className="snapshot-block">
-                  <span className="snapshot-label">Failed</span>
-                  <strong>{followUpSummary.failedCount}</strong>
-                </div>
-              </div>
-              <p className="snapshot-footnote">
-                This tracks whether reminders are drafted, sent, opened, or failing in the current cycle.
-              </p>
-            </article>
-          </section>
+          <DashboardSnapshotPanels
+            displayStats={displayStats}
+            kpiVisuals={kpiVisuals}
+            followUpSummary={followUpSummary}
+          />
 
           <section className="grid-two">
             <article className="panel">
               <h3>Add Invoice</h3>
+              {!canEditOperations && (
+                <p className="snapshot-footnote">
+                  Viewer role has read-only access. Contact an admin to request
+                  Accountant role.
+                </p>
+              )}
               <form onSubmit={handleCreateInvoice} className="stack-form">
                 <input
                   placeholder="Customer Name"
                   value={invoiceForm.customer_name}
                   onChange={(e) =>
-                    setInvoiceForm((prev) => ({ ...prev, customer_name: e.target.value }))
+                    setInvoiceForm((prev) => ({
+                      ...prev,
+                      customer_name: e.target.value,
+                    }))
                   }
+                  disabled={!canEditOperations}
                   required
                 />
                 <input
@@ -1348,8 +1626,12 @@ function App() {
                   placeholder="Customer Email"
                   value={invoiceForm.customer_email}
                   onChange={(e) =>
-                    setInvoiceForm((prev) => ({ ...prev, customer_email: e.target.value }))
+                    setInvoiceForm((prev) => ({
+                      ...prev,
+                      customer_email: e.target.value,
+                    }))
                   }
+                  disabled={!canEditOperations}
                   required
                 />
                 <input
@@ -1357,8 +1639,12 @@ function App() {
                   placeholder="Customer Phone (optional, E.164 for SMS)"
                   value={invoiceForm.customer_phone}
                   onChange={(e) =>
-                    setInvoiceForm((prev) => ({ ...prev, customer_phone: e.target.value }))
+                    setInvoiceForm((prev) => ({
+                      ...prev,
+                      customer_phone: e.target.value,
+                    }))
                   }
+                  disabled={!canEditOperations}
                 />
                 <input
                   type="number"
@@ -1366,33 +1652,57 @@ function App() {
                   step="0.01"
                   placeholder="Amount"
                   value={invoiceForm.amount}
-                  onChange={(e) => setInvoiceForm((prev) => ({ ...prev, amount: e.target.value }))}
+                  onChange={(e) =>
+                    setInvoiceForm((prev) => ({
+                      ...prev,
+                      amount: e.target.value,
+                    }))
+                  }
+                  disabled={!canEditOperations}
                   required
                 />
                 <input
                   type="date"
                   value={invoiceForm.due_date}
-                  onChange={(e) => setInvoiceForm((prev) => ({ ...prev, due_date: e.target.value }))}
+                  onChange={(e) =>
+                    setInvoiceForm((prev) => ({
+                      ...prev,
+                      due_date: e.target.value,
+                    }))
+                  }
+                  disabled={!canEditOperations}
                   required
                 />
-                <button type="submit">Save Invoice</button>
+                <button type="submit" disabled={!canEditOperations}>
+                  Save Invoice
+                </button>
               </form>
 
               <div className="csv-upload">
                 <label htmlFor="invoiceUpload">CSV / Excel Upload</label>
-                <input id="invoiceUpload" type="file" accept=".csv,.xlsx,.xls" onChange={handleInvoiceUpload} />
+                <input
+                  id="invoiceUpload"
+                  type="file"
+                  accept=".csv,.xlsx,.xls"
+                  onChange={handleInvoiceUpload}
+                  disabled={!canEditOperations}
+                />
               </div>
             </article>
 
             <article className="panel">
               <h3>Generate AI Reminder</h3>
-              <select value={selectedInvoiceId} onChange={(e) => setSelectedInvoiceId(e.target.value)}>
+              <select
+                value={selectedInvoiceId}
+                onChange={(e) => setSelectedInvoiceId(e.target.value)}
+              >
                 <option value="">Select invoice</option>
                 {invoices
                   .filter((inv) => inv.status === "pending")
                   .map((invoice) => (
                     <option key={invoice.id} value={invoice.id}>
-                      #{invoice.id} - {invoice.customer_name} (${invoice.amount.toFixed(2)})
+                      #{invoice.id} - {invoice.customer_name} ($
+                      {invoice.amount.toFixed(2)})
                     </option>
                   ))}
               </select>
@@ -1422,7 +1732,10 @@ function App() {
 
               <label>
                 Delivery Provider
-                <select value={deliveryProvider} onChange={(e) => setDeliveryProvider(e.target.value)}>
+                <select
+                  value={deliveryProvider}
+                  onChange={(e) => setDeliveryProvider(e.target.value)}
+                >
                   {DELIVERY_PROVIDERS.map((provider) => (
                     <option key={provider} value={provider}>
                       {provider}
@@ -1431,7 +1744,11 @@ function App() {
                 </select>
               </label>
 
-              <button type="button" onClick={handleGenerateEmail}>
+              <button
+                type="button"
+                onClick={handleGenerateEmail}
+                disabled={!canEditOperations}
+              >
                 Generate Email Draft
               </button>
             </article>
@@ -1485,17 +1802,32 @@ function App() {
                           {invoice.payment_url && (
                             <button
                               type="button"
-                              onClick={() => window.open(invoice.payment_url, "_blank", "noopener,noreferrer")}
+                              onClick={() =>
+                                window.open(
+                                  invoice.payment_url,
+                                  "_blank",
+                                  "noopener,noreferrer",
+                                )
+                              }
                             >
                               Pay Now
                             </button>
                           )}
                           {invoice.status !== "paid" && (
-                            <button type="button" className="ghost" onClick={() => handleMarkPaid(invoice.id)}>
+                            <button
+                              type="button"
+                              className="ghost"
+                              onClick={() => handleMarkPaid(invoice.id)}
+                              disabled={!canEditOperations}
+                            >
                               Mark Paid
                             </button>
                           )}
-                          <button type="button" className="ghost" onClick={() => handleDownloadInvoicePdf(invoice.id)}>
+                          <button
+                            type="button"
+                            className="ghost"
+                            onClick={() => handleDownloadInvoicePdf(invoice.id)}
+                          >
                             Download PDF
                           </button>
                         </div>
@@ -1542,13 +1874,25 @@ function App() {
                       </td>
                       <td>
                         <div className="actions">
-                          <button type="button" onClick={() => setEditingEmail(email)}>
+                          <button
+                            type="button"
+                            onClick={() => setEditingEmail(email)}
+                          >
                             Preview / Edit
                           </button>
-                          <button type="button" onClick={() => handleApprove(email.id)}>
+                          <button
+                            type="button"
+                            onClick={() => handleApprove(email.id)}
+                            disabled={!canEditOperations}
+                          >
                             Approve + Send
                           </button>
-                          <button type="button" className="ghost" onClick={() => handleReject(email.id)}>
+                          <button
+                            type="button"
+                            className="ghost"
+                            onClick={() => handleReject(email.id)}
+                            disabled={!canEditOperations}
+                          >
                             Reject
                           </button>
                         </div>
@@ -1589,7 +1933,10 @@ function App() {
                     <tr key={entry.customer_email}>
                       <td>{entry.customer_name}</td>
                       <td>{entry.customer_email}</td>
-                      <td>{entry.overdue_rate}% ({entry.overdue_invoices}/{entry.total_invoices})</td>
+                      <td>
+                        {entry.overdue_rate}% ({entry.overdue_invoices}/
+                        {entry.total_invoices})
+                      </td>
                       <td>
                         <StatusBadge
                           label={entry.risk_level}
@@ -1646,10 +1993,18 @@ function App() {
                   <tr key={entry.customer_email}>
                     <td data-label="Customer">{entry.customer_name}</td>
                     <td data-label="Email">{entry.customer_email}</td>
-                    <td data-label="Paid / Total">{entry.paid_invoices}/{entry.total_invoices}</td>
-                    <td data-label="On-time Rate">{entry.on_time_payment_rate}%</td>
-                    <td data-label="Avg Days Late">{entry.average_days_late}</td>
-                    <td data-label="Outstanding">${Number(entry.outstanding_amount || 0).toFixed(2)}</td>
+                    <td data-label="Paid / Total">
+                      {entry.paid_invoices}/{entry.total_invoices}
+                    </td>
+                    <td data-label="On-time Rate">
+                      {entry.on_time_payment_rate}%
+                    </td>
+                    <td data-label="Avg Days Late">
+                      {entry.average_days_late}
+                    </td>
+                    <td data-label="Outstanding">
+                      ${Number(entry.outstanding_amount || 0).toFixed(2)}
+                    </td>
                     <td data-label="Risk Score">{entry.risk_score}</td>
                     <td data-label="Risk Level">
                       <StatusBadge
@@ -1681,129 +2036,44 @@ function App() {
           <section className="cards-grid">
             <article className="card info">
               <p>Monthly Recovery Rate</p>
-              <h2>{reportsOverview ? `${reportsOverview.monthly_recovery_rate}%` : "-"}</h2>
-              <small>Paid amount divided by invoiced amount for recent months.</small>
+              <h2>
+                {reportsOverview
+                  ? `${reportsOverview.monthly_recovery_rate}%`
+                  : "-"}
+              </h2>
+              <small>
+                Paid amount divided by invoiced amount for recent months.
+              </small>
             </article>
             <article className="card warning">
               <p>Average Payment Delay</p>
-              <h2>{reportsOverview ? `${reportsOverview.avg_payment_delay_days} days` : "-"}</h2>
+              <h2>
+                {reportsOverview
+                  ? `${reportsOverview.avg_payment_delay_days} days`
+                  : "-"}
+              </h2>
               <small>Average days late across paid invoices.</small>
             </article>
             <article className="card success">
               <p>Email Open Rate</p>
-              <h2>{reportsOverview ? `${reportsOverview.email_open_rate}%` : "-"}</h2>
+              <h2>
+                {reportsOverview ? `${reportsOverview.email_open_rate}%` : "-"}
+              </h2>
               <small>Share of sent reminders that were opened.</small>
             </article>
             <article className="card">
               <p>Email Click Rate</p>
-              <h2>{reportsOverview ? `${reportsOverview.email_click_rate}%` : "-"}</h2>
+              <h2>
+                {reportsOverview ? `${reportsOverview.email_click_rate}%` : "-"}
+              </h2>
               <small>Share of sent reminders with at least one click.</small>
             </article>
           </section>
 
-          <div className="grid-two">
-            <article className="panel integration-inner">
-              <h3>Monthly Recovery Trend</h3>
-              {reportsOverview?.monthly_recovery?.length > 0 ? (
-                <div className="chart-container">
-                  <Bar
-                    data={{
-                      labels: reportsOverview.monthly_recovery.map((r) => r.month),
-                      datasets: [
-                        {
-                          label: "Paid",
-                          data: reportsOverview.monthly_recovery.map((r) => r.paid_amount),
-                          backgroundColor: "rgba(28, 138, 79, 0.7)",
-                          borderColor: "rgba(28, 138, 79, 1)",
-                          borderWidth: 2,
-                        },
-                        {
-                          label: "Invoiced",
-                          data: reportsOverview.monthly_recovery.map((r) => r.invoiced_amount),
-                          backgroundColor: "rgba(193, 106, 47, 0.5)",
-                          borderColor: "rgba(193, 106, 47, 1)",
-                          borderWidth: 2,
-                        },
-                      ],
-                    }}
-                    options={{
-                      responsive: true,
-                      maintainAspectRatio: true,
-                      plugins: { legend: { position: "bottom" } },
-                      scales: { y: { beginAtZero: true } },
-                    }}
-                  />
-                </div>
-              ) : (
-                <EmptyState
-                  tone="insights"
-                  title="No recovery trend yet"
-                  description="Recovery metrics appear after invoice and payment activity."
-                />
-              )}
-              {reportsOverview?.monthly_recovery?.length > 0 && (
-                <div className="table-wrap">
-                  <table className="mobile-responsive">
-                    <thead>
-                      <tr>
-                        <th>Month</th>
-                        <th>Invoiced</th>
-                        <th>Paid</th>
-                        <th>Recovery Rate</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {reportsOverview.monthly_recovery.map((row) => (
-                        <tr key={row.month}>
-                          <td data-label="Month">{row.month}</td>
-                          <td data-label="Invoiced">${Number(row.invoiced_amount || 0).toFixed(2)}</td>
-                          <td data-label="Paid">${Number(row.paid_amount || 0).toFixed(2)}</td>
-                          <td data-label="Recovery Rate">{row.recovery_rate}%</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </article>
-
-            <article className="panel integration-inner">
-              <h3>Top Late Payers</h3>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Customer</th>
-                      <th>Email</th>
-                      <th>Overdue</th>
-                      <th>Overdue Rate</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(!reportsOverview || !reportsOverview.top_late_payers?.length) && (
-                      <tr>
-                        <td colSpan={4}>
-                          <EmptyState
-                            tone="insights"
-                            title="No late payer pattern yet"
-                            description="Top late payer insights will appear as customer behavior data grows."
-                          />
-                        </td>
-                      </tr>
-                    )}
-                    {reportsOverview?.top_late_payers?.map((row) => (
-                      <tr key={row.customer_email}>
-                        <td>{row.customer_name}</td>
-                        <td>{row.customer_email}</td>
-                        <td>{row.overdue_invoices}/{row.total_invoices}</td>
-                        <td>{row.overdue_rate}%</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </article>
-          </div>
+          <ReportsSection
+            reportsOverview={reportsOverview}
+            emailAnalytics={emailAnalytics}
+          />
         </section>
       )}
 
@@ -1848,16 +2118,39 @@ function App() {
                     <td data-label="Status">{email.status}</td>
                     <td data-label="Tone">{email.tone}</td>
                     <td data-label="Retries">{email.retry_count ?? 0}</td>
-                    <td data-label="Sent At">{email.sent_at ? new Date(email.sent_at).toLocaleString() : "-"}</td>
-                    <td data-label="Delivered At">{email.delivered_at ? new Date(email.delivered_at).toLocaleString() : "-"}</td>
-                    <td data-label="Opened At">{email.opened_at ? new Date(email.opened_at).toLocaleString() : "-"}</td>
+                    <td data-label="Sent At">
+                      {email.sent_at
+                        ? new Date(email.sent_at).toLocaleString()
+                        : "-"}
+                    </td>
+                    <td data-label="Delivered At">
+                      {email.delivered_at
+                        ? new Date(email.delivered_at).toLocaleString()
+                        : "-"}
+                    </td>
+                    <td data-label="Opened At">
+                      {email.opened_at
+                        ? new Date(email.opened_at).toLocaleString()
+                        : "-"}
+                    </td>
                     <td data-label="Clicks">{email.click_count ?? 0}</td>
-                    <td data-label="Clicked At">{email.clicked_at ? new Date(email.clicked_at).toLocaleString() : "-"}</td>
-                    <td data-label="Tone Rationale">{email.tone_rationale || "-"}</td>
+                    <td data-label="Clicked At">
+                      {email.clicked_at
+                        ? new Date(email.clicked_at).toLocaleString()
+                        : "-"}
+                    </td>
+                    <td data-label="Tone Rationale">
+                      {email.tone_rationale || "-"}
+                    </td>
                     <td data-label="Failure">{email.failure_reason || "-"}</td>
                     <td data-label="Actions">
-                      {(email.status === "failed" || email.status === "approved") && (
-                        <button type="button" onClick={() => handleSendNow(email.id)}>
+                      {(email.status === "failed" ||
+                        email.status === "approved") && (
+                        <button
+                          type="button"
+                          onClick={() => handleSendNow(email.id)}
+                          disabled={!canEditOperations}
+                        >
                           Send / Retry
                         </button>
                       )}
@@ -1871,440 +2164,64 @@ function App() {
       )}
 
       {activeTab === "integrations" && (
-        <section className="panel">
-          <h3>Integration Imports (Simulated)</h3>
-          <article className="panel integration-inner">
-            <h3>OAuth Connector Hub (Scaffold)</h3>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Provider</th>
-                    <th>Status</th>
-                    <th>Mode</th>
-                    <th>Last Synced</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {integrationConnectors.length === 0 && (
-                    <tr>
-                      <td colSpan={5}>
-                        <EmptyState
-                          tone="integrations"
-                          title="No connector data yet"
-                          description="Connector statuses will appear after first load."
-                        />
-                      </td>
-                    </tr>
-                  )}
-                  {integrationConnectors.map((connector) => (
-                    <tr key={connector.provider}>
-                      <td>{connector.display_name}</td>
-                      <td>
-                        <StatusBadge label={connector.connected ? "Connected" : "Disconnected"} variant={connector.connected ? "ok" : "neutral"} />
-                      </td>
-                      <td>{connector.mode}</td>
-                      <td>{connector.last_synced_at ? new Date(connector.last_synced_at).toLocaleString() : "-"}</td>
-                      <td>
-                        <div className="actions">
-                          {connector.connected ? (
-                            <>
-                              <button type="button" onClick={() => handleSyncIntegration(connector.provider)}>
-                                Sync Invoices
-                              </button>
-                              <button
-                                type="button"
-                                className="ghost"
-                                onClick={() => handleDisconnectIntegration(connector.provider)}
-                              >
-                                Disconnect
-                              </button>
-                            </>
-                          ) : (
-                            <button type="button" onClick={() => handleConnectIntegration(connector.provider)}>
-                              Connect
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </article>
-
-          <div className="grid-two">
-            <article className="panel integration-inner">
-              <h3>Available Sources</h3>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Source</th>
-                      <th>Mode</th>
-                      <th>Ready</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {integrationSources.length === 0 && (
-                      <tr>
-                        <td colSpan={3}>
-                          <EmptyState
-                            tone="integrations"
-                            title="No integration sources available"
-                            description={audience.empty.integrations}
-                          />
-                        </td>
-                      </tr>
-                    )}
-                    {integrationSources.map((src) => (
-                      <tr key={src.id}>
-                        <td>{src.id}</td>
-                        <td>{src.mode}</td>
-                        <td>{src.ready ? "Yes" : "No"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </article>
-
-            <article className="panel integration-inner">
-              <h3>Import Invoices</h3>
-              <label>
-                Source
-                <select value={integrationSource} onChange={(e) => setIntegrationSource(e.target.value)}>
-                  <option value="fake_api">fake_api</option>
-                  <option value="xero">xero</option>
-                  <option value="quickbooks">quickbooks</option>
-                  <option value="zoho_books">zoho_books</option>
-                </select>
-              </label>
-              <label>
-                Count
-                <input
-                  type="number"
-                  min="1"
-                  max="50"
-                  value={integrationCount}
-                  onChange={(e) => setIntegrationCount(e.target.value)}
-                />
-              </label>
-              <button type="button" onClick={handleImportFromIntegration}>
-                Import Invoices
-              </button>
-            </article>
-          </div>
-        </section>
+        <IntegrationsSection
+          integrationConnectors={integrationConnectors}
+          integrationSources={integrationSources}
+          handleSyncIntegration={handleSyncIntegration}
+          handleDisconnectIntegration={handleDisconnectIntegration}
+          handleConnectIntegration={handleConnectIntegration}
+          canEditOperations={canEditOperations}
+          integrationSource={integrationSource}
+          setIntegrationSource={setIntegrationSource}
+          integrationCount={integrationCount}
+          setIntegrationCount={setIntegrationCount}
+          handleImportFromIntegration={handleImportFromIntegration}
+          audience={audience}
+        />
       )}
 
-      {activeTab === "team" && currentUser.role === "admin" && (
-        <section className="panel">
-          <h3>Team Management</h3>
-          <section className="grid-two">
-            <article className="panel team-inner">
-              <h3>Create Team User</h3>
-              <form className="stack-form" onSubmit={handleCreateTeamUser}>
-                <input
-                  placeholder="Username"
-                  value={teamForm.username}
-                  onChange={(e) => setTeamForm((prev) => ({ ...prev, username: e.target.value }))}
-                  required
-                />
-                <input
-                  type="email"
-                  placeholder="Email"
-                  value={teamForm.email}
-                  onChange={(e) => setTeamForm((prev) => ({ ...prev, email: e.target.value }))}
-                  required
-                />
-                <input
-                  type="password"
-                  placeholder="Temporary Password"
-                  value={teamForm.password}
-                  onChange={(e) => setTeamForm((prev) => ({ ...prev, password: e.target.value }))}
-                  required
-                  minLength={8}
-                />
-                <select
-                  value={teamForm.role}
-                  onChange={(e) => setTeamForm((prev) => ({ ...prev, role: e.target.value }))}
-                >
-                  {TEAM_ROLES.map((role) => (
-                    <option key={role} value={role}>
-                      {role}
-                    </option>
-                  ))}
-                </select>
-                <button type="submit">Create User</button>
-              </form>
-
-              <div className="team-divider" />
-
-              <h3>Invite Existing User</h3>
-              <form className="stack-form" onSubmit={handleInviteExistingUser}>
-                <input
-                  type="email"
-                  placeholder="Existing user email"
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  required
-                />
-                <button type="submit" className="ghost">Invite to Active Company</button>
-              </form>
-            </article>
-
-            <article className="panel team-inner">
-              <h3>Users</h3>
-              <div className="team-presets-wrap">
-                <div className="team-presets-row">
-                  {TEAM_VIEW_PRESETS.map((preset) => {
-                    const isActive =
-                      teamFilterMode === preset.filter
-                      && teamSortKey === preset.sortKey
-                      && teamSortDir === preset.sortDir
-                      && teamSearchTerm === preset.search;
-                    return (
-                      <button
-                        key={preset.key}
-                        type="button"
-                        className={`preset-chip ${isActive ? "active" : ""}`}
-                        onClick={() => applyTeamPreset(preset)}
-                      >
-                        {preset.label}
-                      </button>
-                    );
-                  })}
-                </div>
-                <button type="button" className="preset-reset-btn" onClick={resetTeamView}>
-                  Reset Team View
-                </button>
-              </div>
-              <p className="team-shortcuts-hint">Shortcuts: / focus search, R reset, 1-4 apply presets</p>
-              <div className="team-search-wrap">
-                <input
-                  ref={teamSearchInputRef}
-                  type="text"
-                  placeholder="Search by username, email, or role"
-                  value={teamSearchTerm}
-                  onChange={(e) => setTeamSearchTerm(e.target.value)}
-                />
-              </div>
-              <div className="team-filter-row">
-                {[
-                  { key: "all", label: "All" },
-                  { key: "owners", label: "Owners" },
-                  { key: "members", label: "Members" },
-                  { key: "you", label: "You" },
-                ].map((item) => (
-                  <button
-                    key={item.key}
-                    type="button"
-                    className={`filter-chip ${teamFilterMode === item.key ? "active" : ""}`}
-                    onClick={() => setTeamFilterMode(item.key)}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-              <div className="member-summary">
-                <span className="member-pill">Company Members: {teamUsers.length}</span>
-                {activeCompany && <span className="member-pill subtle">Owner ID: {activeCompany.owner_user_id}</span>}
-                <span className="member-pill subtle">Visible: {teamVisibleUsers.length}</span>
-              </div>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>ID</th>
-                      <th>
-                        <button type="button" className="sort-header-btn" onClick={() => handleTeamSort("username")}>
-                          Username {teamSortMarker("username")}
-                        </button>
-                      </th>
-                      <th>Email</th>
-                      <th>
-                        <button type="button" className="sort-header-btn" onClick={() => handleTeamSort("role")}>
-                          Role {teamSortMarker("role")}
-                        </button>
-                      </th>
-                      <th>
-                        <button type="button" className="sort-header-btn" onClick={() => handleTeamSort("access")}>
-                          Company Access {teamSortMarker("access")}
-                        </button>
-                      </th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {teamVisibleUsers.length === 0 && (
-                      <tr>
-                        <td colSpan={6}>
-                          <EmptyState
-                            tone="team"
-                            title={teamUsers.length === 0 ? "No team members provisioned" : "No search matches"}
-                            description={
-                              teamUsers.length === 0
-                                ? audience.empty.team
-                                : "Try a different username, email, or role filter."
-                            }
-                          />
-                        </td>
-                      </tr>
-                    )}
-                    {teamVisibleUsers.map((user) => (
-                      <tr key={user.id}>
-                        <td>{user.id}</td>
-                        <td>{user.username}</td>
-                        <td>{user.email}</td>
-                        <td>{user.role}</td>
-                        <td>
-                          <div className="member-tags">
-                            {activeCompany?.owner_user_id === user.id ? (
-                              <span className="member-tag owner">Owner</span>
-                            ) : (
-                              <span className="member-tag member">Member</span>
-                            )}
-                            {user.id === currentUser.id && <span className="member-tag you">You</span>}
-                          </div>
-                        </td>
-                        <td>
-                          {user.id !== currentUser.id && activeCompany?.owner_user_id !== user.id && (
-                            <button
-                              type="button"
-                              className="ghost"
-                              onClick={() => handleRemoveMember(user.id, user.username)}
-                            >
-                              Remove
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </article>
-          </section>
-        </section>
+      {activeTab === "team" && isAdmin && (
+        <TeamSection
+          teamForm={teamForm}
+          setTeamForm={setTeamForm}
+          handleCreateTeamUser={handleCreateTeamUser}
+          inviteEmail={inviteEmail}
+          setInviteEmail={setInviteEmail}
+          handleInviteExistingUser={handleInviteExistingUser}
+          teamUsers={teamUsers}
+          teamVisibleUsers={teamVisibleUsers}
+          teamFilterMode={teamFilterMode}
+          setTeamFilterMode={setTeamFilterMode}
+          teamSearchTerm={teamSearchTerm}
+          setTeamSearchTerm={setTeamSearchTerm}
+          teamSearchInputRef={teamSearchInputRef}
+          teamSortMarker={teamSortMarker}
+          handleTeamSort={handleTeamSort}
+          teamSortKey={teamSortKey}
+          teamSortDir={teamSortDir}
+          TEAM_ROLES={TEAM_ROLES}
+          TEAM_VIEW_PRESETS={TEAM_VIEW_PRESETS}
+          applyTeamPreset={applyTeamPreset}
+          resetTeamView={resetTeamView}
+          currentUser={currentUser}
+          activeCompany={activeCompany}
+          handleRemoveMember={handleRemoveMember}
+          audience={audience}
+        />
       )}
 
-      {activeTab === "ops" && currentUser.role === "admin" && (
-        <section className="panel">
-          <h3>Ops Console</h3>
-          <div className="actions">
-            <button type="button" onClick={handleRunQueueNow}>Run Queue Now</button>
-          </div>
-          <div className="grid-two">
-            <article className="panel">
-              <h3>Queue Status</h3>
-              <p>Queued: {queueStats?.queued ?? 0}</p>
-              <p>Processing: {queueStats?.processing ?? 0}</p>
-              <p>Succeeded: {queueStats?.succeeded ?? 0}</p>
-              <p>Failed: {queueStats?.failed ?? 0}</p>
-              <p>Failed Emails: {opsMetrics?.failed_emails ?? 0}</p>
-              <p>Webhook Events (24h): {opsMetrics?.webhook_events_24h ?? 0}</p>
-            </article>
-            <article className="panel">
-              <h3>Queue Jobs</h3>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>ID</th>
-                      <th>Type</th>
-                      <th>Status</th>
-                      <th>Attempts</th>
-                      <th>Error</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {queueJobs.slice(0, 20).map((job) => (
-                      <tr key={job.id}>
-                        <td>{job.id}</td>
-                        <td>{job.job_type}</td>
-                        <td>{job.status}</td>
-                        <td>{job.attempts}/{job.max_attempts}</td>
-                        <td>{job.last_error || "-"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </article>
-          </div>
-          <article className="panel">
-            <h3>Twilio Webhook Simulator</h3>
-            <form className="stack-form" onSubmit={handleSimulateTwilioWebhook}>
-              <label>
-                Message SID (optional in dry-run)
-                <input
-                  type="text"
-                  value={webhookSimulator.MessageSid}
-                  onChange={(e) => setWebhookSimulator((prev) => ({ ...prev, MessageSid: e.target.value }))}
-                  placeholder="SMXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-                />
-              </label>
-              <label>
-                Message Status
-                <select
-                  value={webhookSimulator.MessageStatus}
-                  onChange={(e) => setWebhookSimulator((prev) => ({ ...prev, MessageStatus: e.target.value }))}
-                >
-                  {TWILIO_STATUSES.map((status) => (
-                    <option key={status} value={status}>{status}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                To
-                <input
-                  type="text"
-                  value={webhookSimulator.To}
-                  onChange={(e) => setWebhookSimulator((prev) => ({ ...prev, To: e.target.value }))}
-                  placeholder="+14155552671"
-                />
-              </label>
-              <label>
-                From
-                <input
-                  type="text"
-                  value={webhookSimulator.From}
-                  onChange={(e) => setWebhookSimulator((prev) => ({ ...prev, From: e.target.value }))}
-                  placeholder="whatsapp:+14155238886"
-                />
-              </label>
-              <button type="submit">Simulate Webhook</button>
-            </form>
-          </article>
-          <article className="panel">
-            <h3>Audit Log</h3>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>When</th>
-                    <th>Action</th>
-                    <th>Entity</th>
-                    <th>User</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {auditLogs.slice(0, 40).map((log) => (
-                    <tr key={log.id}>
-                      <td>{new Date(log.created_at).toLocaleString()}</td>
-                      <td>{log.action}</td>
-                      <td>{log.entity_type} #{log.entity_id || "-"}</td>
-                      <td>{log.user_id || "-"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </article>
-        </section>
+      {activeTab === "ops" && isAdmin && (
+        <OpsSection
+          handleRunQueueNow={handleRunQueueNow}
+          queueStats={queueStats}
+          opsMetrics={opsMetrics}
+          queueJobs={queueJobs}
+          webhookSimulator={webhookSimulator}
+          setWebhookSimulator={setWebhookSimulator}
+          handleSimulateTwilioWebhook={handleSimulateTwilioWebhook}
+          auditLogs={auditLogs}
+          twilioStatuses={TWILIO_STATUSES}
+        />
       )}
 
       {editingEmail && (
@@ -2315,7 +2232,12 @@ function App() {
               Subject
               <input
                 value={editingEmail.subject}
-                onChange={(e) => setEditingEmail((prev) => ({ ...prev, subject: e.target.value }))}
+                onChange={(e) =>
+                  setEditingEmail((prev) => ({
+                    ...prev,
+                    subject: e.target.value,
+                  }))
+                }
               />
             </label>
             <label>
@@ -2323,17 +2245,26 @@ function App() {
               <textarea
                 rows={10}
                 value={editingEmail.body}
-                onChange={(e) => setEditingEmail((prev) => ({ ...prev, body: e.target.value }))}
+                onChange={(e) =>
+                  setEditingEmail((prev) => ({ ...prev, body: e.target.value }))
+                }
               />
             </label>
             <div className="actions right">
-              <button type="button" className="ghost" onClick={() => setEditingEmail(null)}>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => setEditingEmail(null)}
+              >
                 Close
               </button>
               <button type="button" onClick={handleEditSave}>
                 Save Changes
               </button>
-              <button type="button" onClick={() => handleApprove(editingEmail.id)}>
+              <button
+                type="button"
+                onClick={() => handleApprove(editingEmail.id)}
+              >
                 Approve + Send
               </button>
             </div>
@@ -2343,13 +2274,20 @@ function App() {
 
       {loading && <div className="loading-pill">Refreshing data...</div>}
 
-      <div className="toast-container" role="region" aria-live="polite" aria-atomic="true">
+      <div
+        className="toast-container"
+        role="region"
+        aria-live="polite"
+        aria-atomic="true"
+      >
         {toasts.map((toast) => (
           <Toast
             key={toast.id}
             message={toast.message}
             type={toast.type}
-            onClose={() => setToasts((prev) => prev.filter((t) => t.id !== toast.id))}
+            onClose={() =>
+              setToasts((prev) => prev.filter((t) => t.id !== toast.id))
+            }
           />
         ))}
       </div>

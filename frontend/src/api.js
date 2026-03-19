@@ -1,4 +1,7 @@
-const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
+const API_BASE =
+  import.meta.env.VITE_API_BASE ||
+  import.meta.env.VITE_API_BASE_URL ||
+  "http://127.0.0.1:8000";
 const TOKEN_KEY = "invoice_auth_token";
 const REFRESH_TOKEN_KEY = "invoice_refresh_token";
 
@@ -37,7 +40,12 @@ async function request(path, options = {}) {
     ...options,
   });
 
-  if (response.status === 401 && path !== "/auth/login" && path !== "/auth/signup" && path !== "/auth/refresh") {
+  if (
+    response.status === 401 &&
+    path !== "/auth/login" &&
+    path !== "/auth/signup" &&
+    path !== "/auth/refresh"
+  ) {
     const refresh = getRefreshToken();
     if (refresh) {
       const refreshResponse = await fetch(`${API_BASE}/auth/refresh`, {
@@ -77,24 +85,54 @@ async function request(path, options = {}) {
 }
 
 export const api = {
-  signup: (payload) => request("/auth/signup", { method: "POST", body: JSON.stringify(payload) }),
-  login: (payload) => request("/auth/login", { method: "POST", body: JSON.stringify(payload) }),
-  refresh: (refresh_token) => request("/auth/refresh", { method: "POST", body: JSON.stringify({ refresh_token }) }),
-  logout: (refresh_token) => request("/auth/logout", { method: "POST", body: JSON.stringify({ refresh_token }) }),
-  logoutAll: () => request("/auth/logout-all", { method: "POST", body: JSON.stringify({}) }),
-  setupMfa: () => request("/auth/mfa/setup", { method: "POST", body: JSON.stringify({}) }),
-  enableMfa: (otp_code) => request("/auth/mfa/enable", { method: "POST", body: JSON.stringify({ otp_code }) }),
-  disableMfa: (otp_code) => request("/auth/mfa/disable", { method: "POST", body: JSON.stringify({ otp_code }) }),
+  signup: (payload) =>
+    request("/auth/signup", { method: "POST", body: JSON.stringify(payload) }),
+  login: (payload) =>
+    request("/auth/login", { method: "POST", body: JSON.stringify(payload) }),
+  refresh: (refresh_token) =>
+    request("/auth/refresh", {
+      method: "POST",
+      body: JSON.stringify({ refresh_token }),
+    }),
+  logout: (refresh_token) =>
+    request("/auth/logout", {
+      method: "POST",
+      body: JSON.stringify({ refresh_token }),
+    }),
+  logoutAll: () =>
+    request("/auth/logout-all", { method: "POST", body: JSON.stringify({}) }),
+  setupMfa: () =>
+    request("/auth/mfa/setup", { method: "POST", body: JSON.stringify({}) }),
+  enableMfa: (otp_code) =>
+    request("/auth/mfa/enable", {
+      method: "POST",
+      body: JSON.stringify({ otp_code }),
+    }),
+  disableMfa: (otp_code) =>
+    request("/auth/mfa/disable", {
+      method: "POST",
+      body: JSON.stringify({ otp_code }),
+    }),
   me: () => request("/auth/me"),
   getStats: () => request("/dashboard/stats"),
   getCompanies: () => request("/companies"),
-  createCompany: (payload) => request("/companies", { method: "POST", body: JSON.stringify(payload) }),
+  createCompany: (payload) =>
+    request("/companies", { method: "POST", body: JSON.stringify(payload) }),
   switchCompany: (company_id) =>
-    request("/companies/switch", { method: "POST", body: JSON.stringify({ company_id }) }),
+    request("/companies/switch", {
+      method: "POST",
+      body: JSON.stringify({ company_id }),
+    }),
   inviteToActiveCompany: (email) =>
-    request("/companies/active/invite", { method: "POST", body: JSON.stringify({ email }) }),
+    request("/companies/active/invite", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
   removeFromActiveCompany: (user_id) =>
-    request("/companies/active/remove-member", { method: "POST", body: JSON.stringify({ user_id }) }),
+    request("/companies/active/remove-member", {
+      method: "POST",
+      body: JSON.stringify({ user_id }),
+    }),
   getInvoices: () => request("/invoices"),
   getOverdue: () => request("/overdue"),
   createInvoice: (payload) =>
@@ -161,10 +199,16 @@ export const api = {
     return response.json();
   },
   generateEmail: (payload) =>
-    request("/generate-email", { method: "POST", body: JSON.stringify(payload) }),
+    request("/generate-email", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   getPendingApprovals: () => request("/emails/pending-approvals"),
   editEmail: (id, payload) =>
-    request(`/emails/${id}/edit`, { method: "PATCH", body: JSON.stringify(payload) }),
+    request(`/emails/${id}/edit`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
   approveEmail: (id, provider = "smtp") =>
     request(`/emails/${id}/approve`, {
       method: "POST",
@@ -177,26 +221,49 @@ export const api = {
     }),
   rejectEmail: (id) => request(`/emails/${id}/reject`, { method: "POST" }),
   getEmails: () => request("/emails"),
-  getAuditLogs: (limit = 50) => request(`/audit/logs?limit=${encodeURIComponent(limit)}`),
+  getAuditLogs: (limit = 50) =>
+    request(`/audit/logs?limit=${encodeURIComponent(limit)}`),
   getQueueJobs: (limit = 100, status = "") =>
-    request(`/jobs/queue?limit=${encodeURIComponent(limit)}${status ? `&status=${encodeURIComponent(status)}` : ""}`),
+    request(
+      `/jobs/queue?limit=${encodeURIComponent(limit)}${status ? `&status=${encodeURIComponent(status)}` : ""}`,
+    ),
   getQueueStats: () => request("/jobs/stats"),
-  runQueueNow: (limit = 25) => request(`/jobs/run-now?limit=${encodeURIComponent(limit)}`, { method: "POST" }),
+  runQueueNow: (limit = 25) =>
+    request(`/jobs/run-now?limit=${encodeURIComponent(limit)}`, {
+      method: "POST",
+    }),
   getOpsMetrics: () => request("/ops/metrics"),
-  simulateTwilioStatus: (payload) => request("/webhooks/twilio/status", { method: "POST", body: JSON.stringify(payload) }),
+  simulateTwilioStatus: (payload) =>
+    request("/webhooks/twilio/status", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   getLatePayerInsights: () => request("/insights/late-payers"),
   getReportsOverview: () => request("/reports/overview"),
+  getEmailAnalytics: () => request("/emails/analytics"),
   getCustomerHistory: () => request("/customers/history"),
   getTeamUsers: () => request("/team/users"),
-  createTeamUser: (payload) => request("/team/users", { method: "POST", body: JSON.stringify(payload) }),
+  createTeamUser: (payload) =>
+    request("/team/users", { method: "POST", body: JSON.stringify(payload) }),
   getIntegrationSources: () => request("/integrations/sources"),
   getIntegrationConnectors: () => request("/integrations/connectors"),
-  startIntegrationOAuth: (provider) => request(`/integrations/${provider}/oauth/start`, { method: "POST" }),
+  startIntegrationOAuth: (provider) =>
+    request(`/integrations/${provider}/oauth/start`, { method: "POST" }),
   completeIntegrationOAuth: (provider, code, state) =>
-    request(`/integrations/${provider}/oauth/callback`, { method: "POST", body: JSON.stringify({ code, state }) }),
-  disconnectIntegration: (provider) => request(`/integrations/${provider}/disconnect`, { method: "POST" }),
+    request(`/integrations/${provider}/oauth/callback`, {
+      method: "POST",
+      body: JSON.stringify({ code, state }),
+    }),
+  disconnectIntegration: (provider) =>
+    request(`/integrations/${provider}/disconnect`, { method: "POST" }),
   syncIntegrationInvoices: (provider, count = 5) =>
-    request(`/integrations/${provider}/sync-invoices`, { method: "POST", body: JSON.stringify({ count }) }),
+    request(`/integrations/${provider}/sync-invoices`, {
+      method: "POST",
+      body: JSON.stringify({ count }),
+    }),
   importIntegrationInvoices: (payload) =>
-    request("/integrations/import-invoices", { method: "POST", body: JSON.stringify(payload) }),
+    request("/integrations/import-invoices", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 };

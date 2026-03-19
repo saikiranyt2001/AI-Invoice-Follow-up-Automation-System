@@ -10,11 +10,16 @@ from app.api.support import get_active_company, invoice_to_out, record_audit_eve
 from app.database import get_db
 from app.invoice_import import parse_invoice_file, validate_invoice_rows
 from app.models import Invoice, InvoiceStatus, User
-from app.schemas import InvoiceCreate, InvoiceImportOut, InvoiceOut, InvoiceStatusUpdate, PaymentConfirmRequest
-from app.security import get_current_user
-from app.services.invoice_service import is_overdue, mark_invoice_paid
-from app.services.invoice_service import build_payment_link
+from app.schemas import (
+    InvoiceCreate,
+    InvoiceImportOut,
+    InvoiceOut,
+    InvoiceStatusUpdate,
+    PaymentConfirmRequest,
+)
+from app.security import require_accountant_or_admin, require_read_only_or_higher
 from app.services.invoice_pdf_service import build_invoice_pdf
+from app.services.invoice_service import build_payment_link, is_overdue, mark_invoice_paid
 
 router = APIRouter(tags=["invoices"])
 
@@ -23,7 +28,7 @@ router = APIRouter(tags=["invoices"])
 def create_invoice(
     payload: InvoiceCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_accountant_or_admin),
 ):
     active_company = get_active_company(db, current_user)
     invoice = Invoice(**payload.model_dump(), user_id=current_user.id, company_id=active_company.id)
@@ -46,7 +51,7 @@ def create_invoice(
 def upload_invoices(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_accountant_or_admin),
 ):
     active_company = get_active_company(db, current_user)
     if not file.filename:
@@ -90,7 +95,7 @@ def upload_invoices(
 def list_invoices(
     status: InvoiceStatus | None = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_read_only_or_higher),
 ):
     active_company = get_active_company(db, current_user)
     query = select(Invoice).where(Invoice.company_id == active_company.id)
@@ -105,7 +110,7 @@ def update_invoice_status(
     invoice_id: int,
     payload: InvoiceStatusUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_accountant_or_admin),
 ):
     active_company = get_active_company(db, current_user)
     invoice = db.get(Invoice, invoice_id)
@@ -118,7 +123,9 @@ def update_invoice_status(
 
 
 @router.get("/overdue", response_model=list[InvoiceOut])
-def get_overdue_invoices(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_overdue_invoices(
+    db: Session = Depends(get_db), current_user: User = Depends(require_read_only_or_higher)
+):
     active_company = get_active_company(db, current_user)
     invoices = db.scalars(
         select(Invoice).where(
@@ -134,7 +141,7 @@ def mark_invoice_paid_direct(
     invoice_id: int,
     payload: PaymentConfirmRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_accountant_or_admin),
 ):
     active_company = get_active_company(db, current_user)
     invoice = db.get(Invoice, invoice_id)
@@ -159,7 +166,7 @@ def mark_invoice_paid_direct(
 def download_invoice_pdf(
     invoice_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_read_only_or_higher),
 ):
     active_company = get_active_company(db, current_user)
     invoice = db.get(Invoice, invoice_id)

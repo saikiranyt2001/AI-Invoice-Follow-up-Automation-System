@@ -42,7 +42,11 @@ def run_lightweight_migrations() -> None:
                     ")"
                 )
             )
-            connection.execute(text("CREATE UNIQUE INDEX uq_company_member ON company_memberships(company_id, user_id)"))
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX uq_company_member ON company_memberships(company_id, user_id)"
+                )
+            )
 
         if "integration_connections" not in table_names:
             connection.execute(
@@ -84,8 +88,12 @@ def run_lightweight_migrations() -> None:
                     ")"
                 )
             )
-            connection.execute(text("CREATE INDEX ix_audit_logs_company_id ON audit_logs(company_id)"))
-            connection.execute(text("CREATE INDEX ix_audit_logs_created_at ON audit_logs(created_at)"))
+            connection.execute(
+                text("CREATE INDEX ix_audit_logs_company_id ON audit_logs(company_id)")
+            )
+            connection.execute(
+                text("CREATE INDEX ix_audit_logs_created_at ON audit_logs(created_at)")
+            )
 
         if "job_queue" not in table_names:
             connection.execute(
@@ -107,7 +115,9 @@ def run_lightweight_migrations() -> None:
                 )
             )
             connection.execute(text("CREATE INDEX ix_job_queue_status ON job_queue(status)"))
-            connection.execute(text("CREATE INDEX ix_job_queue_available_at ON job_queue(available_at)"))
+            connection.execute(
+                text("CREATE INDEX ix_job_queue_available_at ON job_queue(available_at)")
+            )
 
         if "webhook_events" not in table_names:
             connection.execute(
@@ -123,9 +133,15 @@ def run_lightweight_migrations() -> None:
                     ")"
                 )
             )
-            connection.execute(text("CREATE UNIQUE INDEX uq_webhook_event_key ON webhook_events(event_key)"))
-            connection.execute(text("CREATE INDEX ix_webhook_events_source ON webhook_events(source)"))
-            connection.execute(text("CREATE INDEX ix_webhook_events_created_at ON webhook_events(created_at)"))
+            connection.execute(
+                text("CREATE UNIQUE INDEX uq_webhook_event_key ON webhook_events(event_key)")
+            )
+            connection.execute(
+                text("CREATE INDEX ix_webhook_events_source ON webhook_events(source)")
+            )
+            connection.execute(
+                text("CREATE INDEX ix_webhook_events_created_at ON webhook_events(created_at)")
+            )
 
         if "refresh_tokens" not in table_names:
             connection.execute(
@@ -140,8 +156,12 @@ def run_lightweight_migrations() -> None:
                     ")"
                 )
             )
-            connection.execute(text("CREATE INDEX ix_refresh_tokens_user_id ON refresh_tokens(user_id)"))
-            connection.execute(text("CREATE INDEX ix_refresh_tokens_expires_at ON refresh_tokens(expires_at)"))
+            connection.execute(
+                text("CREATE INDEX ix_refresh_tokens_user_id ON refresh_tokens(user_id)")
+            )
+            connection.execute(
+                text("CREATE INDEX ix_refresh_tokens_expires_at ON refresh_tokens(expires_at)")
+            )
 
         if "revoked_access_tokens" not in table_names:
             connection.execute(
@@ -154,18 +174,26 @@ def run_lightweight_migrations() -> None:
                     ")"
                 )
             )
-            connection.execute(text("CREATE INDEX ix_revoked_access_tokens_expires_at ON revoked_access_tokens(expires_at)"))
+            connection.execute(
+                text(
+                    "CREATE INDEX ix_revoked_access_tokens_expires_at ON revoked_access_tokens(expires_at)"
+                )
+            )
 
         if "role" not in user_columns:
             connection.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(20)"))
-            connection.execute(text("UPDATE users SET role = 'team' WHERE role IS NULL"))
+            connection.execute(text("UPDATE users SET role = 'viewer' WHERE role IS NULL"))
         else:
             connection.execute(text("UPDATE users SET role = lower(role) WHERE role IS NOT NULL"))
-            connection.execute(text("UPDATE users SET role = 'team' WHERE role IS NULL OR role = ''"))
+            connection.execute(
+                text("UPDATE users SET role = 'viewer' WHERE role IS NULL OR role = ''")
+            )
+            connection.execute(text("UPDATE users SET role = 'viewer' WHERE role = 'team'"))
+            connection.execute(text("UPDATE users SET role = 'accountant' WHERE role = 'manager'"))
             connection.execute(
                 text(
-                    "UPDATE users SET role = 'team' "
-                    "WHERE role NOT IN ('admin', 'manager', 'accountant', 'team')"
+                    "UPDATE users SET role = 'viewer' "
+                    "WHERE role NOT IN ('admin', 'accountant', 'viewer')"
                 )
             )
 
@@ -192,7 +220,9 @@ def run_lightweight_migrations() -> None:
             connection.execute(text("ALTER TABLE invoices ADD COLUMN payment_token VARCHAR(128)"))
 
         if "payment_reference" not in invoice_columns:
-            connection.execute(text("ALTER TABLE invoices ADD COLUMN payment_reference VARCHAR(255)"))
+            connection.execute(
+                text("ALTER TABLE invoices ADD COLUMN payment_reference VARCHAR(255)")
+            )
 
         if "paid_at" not in invoice_columns:
             connection.execute(text("ALTER TABLE invoices ADD COLUMN paid_at DATETIME"))
@@ -204,21 +234,37 @@ def run_lightweight_migrations() -> None:
             connection.execute(text("ALTER TABLE reminder_emails ADD COLUMN company_id INTEGER"))
 
         if "provider_message_id" not in reminder_columns:
-            connection.execute(text("ALTER TABLE reminder_emails ADD COLUMN provider_message_id VARCHAR(255)"))
+            connection.execute(
+                text("ALTER TABLE reminder_emails ADD COLUMN provider_message_id VARCHAR(255)")
+            )
 
         if "channel" not in reminder_columns:
-            connection.execute(text("ALTER TABLE reminder_emails ADD COLUMN channel VARCHAR(20) DEFAULT 'email'"))
-            connection.execute(text("UPDATE reminder_emails SET channel = 'email' WHERE channel IS NULL OR channel = ''"))
+            connection.execute(
+                text("ALTER TABLE reminder_emails ADD COLUMN channel VARCHAR(20) DEFAULT 'email'")
+            )
+            connection.execute(
+                text(
+                    "UPDATE reminder_emails SET channel = 'email' WHERE channel IS NULL OR channel = ''"
+                )
+            )
 
         if "tracking_token" not in reminder_columns:
-            connection.execute(text("ALTER TABLE reminder_emails ADD COLUMN tracking_token VARCHAR(128)"))
+            connection.execute(
+                text("ALTER TABLE reminder_emails ADD COLUMN tracking_token VARCHAR(128)")
+            )
 
         if "retry_count" not in reminder_columns:
-            connection.execute(text("ALTER TABLE reminder_emails ADD COLUMN retry_count INTEGER DEFAULT 0"))
-            connection.execute(text("UPDATE reminder_emails SET retry_count = 0 WHERE retry_count IS NULL"))
+            connection.execute(
+                text("ALTER TABLE reminder_emails ADD COLUMN retry_count INTEGER DEFAULT 0")
+            )
+            connection.execute(
+                text("UPDATE reminder_emails SET retry_count = 0 WHERE retry_count IS NULL")
+            )
 
         if "last_attempt_at" not in reminder_columns:
-            connection.execute(text("ALTER TABLE reminder_emails ADD COLUMN last_attempt_at DATETIME"))
+            connection.execute(
+                text("ALTER TABLE reminder_emails ADD COLUMN last_attempt_at DATETIME")
+            )
 
         if "delivered_at" not in reminder_columns:
             connection.execute(text("ALTER TABLE reminder_emails ADD COLUMN delivered_at DATETIME"))
@@ -229,12 +275,26 @@ def run_lightweight_migrations() -> None:
         if "clicked_at" not in reminder_columns:
             connection.execute(text("ALTER TABLE reminder_emails ADD COLUMN clicked_at DATETIME"))
 
+        if "bounced_at" not in reminder_columns:
+            connection.execute(text("ALTER TABLE reminder_emails ADD COLUMN bounced_at DATETIME"))
+
+        if "spam_reported_at" not in reminder_columns:
+            connection.execute(
+                text("ALTER TABLE reminder_emails ADD COLUMN spam_reported_at DATETIME")
+            )
+
         if "click_count" not in reminder_columns:
-            connection.execute(text("ALTER TABLE reminder_emails ADD COLUMN click_count INTEGER DEFAULT 0"))
-            connection.execute(text("UPDATE reminder_emails SET click_count = 0 WHERE click_count IS NULL"))
+            connection.execute(
+                text("ALTER TABLE reminder_emails ADD COLUMN click_count INTEGER DEFAULT 0")
+            )
+            connection.execute(
+                text("UPDATE reminder_emails SET click_count = 0 WHERE click_count IS NULL")
+            )
 
         if "tone_rationale" not in reminder_columns:
             connection.execute(text("ALTER TABLE reminder_emails ADD COLUMN tone_rationale TEXT"))
 
         if "tone_factors_json" not in reminder_columns:
-            connection.execute(text("ALTER TABLE reminder_emails ADD COLUMN tone_factors_json TEXT"))
+            connection.execute(
+                text("ALTER TABLE reminder_emails ADD COLUMN tone_factors_json TEXT")
+            )

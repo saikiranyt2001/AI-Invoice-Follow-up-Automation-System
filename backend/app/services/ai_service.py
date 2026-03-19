@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 from app.email.templates import generate_email_content_with_ai
 from app.models import Invoice, InvoiceStatus, Tone
 
-
 _TONE_SCORE = {
     Tone.FRIENDLY: 1,
     Tone.PROFESSIONAL: 2,
@@ -25,7 +24,9 @@ def generate_reminder_content(
     return generate_email_content_with_ai(invoice, tone, payment_link, message_style)
 
 
-def recommend_follow_up_tone(db: Session, invoice: Invoice, fallback_tone: Tone | None = None) -> Tone:
+def recommend_follow_up_tone(
+    db: Session, invoice: Invoice, fallback_tone: Tone | None = None
+) -> Tone:
     today = date.today()
     delay_days = max(0, (today - invoice.due_date).days)
 
@@ -43,7 +44,11 @@ def recommend_follow_up_tone(db: Session, invoice: Invoice, fallback_tone: Tone 
     for item in history:
         if item.status == InvoiceStatus.PENDING and item.due_date < today:
             late_or_overdue += 1
-        elif item.status == InvoiceStatus.PAID and item.paid_at and item.paid_at.date() > item.due_date:
+        elif (
+            item.status == InvoiceStatus.PAID
+            and item.paid_at
+            and item.paid_at.date() > item.due_date
+        ):
             late_or_overdue += 1
 
     late_rate = (late_or_overdue / total) if total else 0.0
@@ -81,7 +86,11 @@ def recommend_follow_up_tone_with_context(
     for item in history:
         if item.status == InvoiceStatus.PENDING and item.due_date < today:
             late_or_overdue += 1
-        elif item.status == InvoiceStatus.PAID and item.paid_at and item.paid_at.date() > item.due_date:
+        elif (
+            item.status == InvoiceStatus.PAID
+            and item.paid_at
+            and item.paid_at.date() > item.due_date
+        ):
             late_or_overdue += 1
 
     late_rate = (late_or_overdue / total) if total else 0.0
@@ -90,7 +99,9 @@ def recommend_follow_up_tone_with_context(
     rationale = "Friendly tone selected for low delay, low amount, and healthy payment behavior."
     if delay_days >= 10 or invoice.amount >= 5000 or late_rate >= 0.6:
         recommended = Tone.STRICT
-        rationale = "Strict tone selected due to high delay, high amount, or repeatedly late payments."
+        rationale = (
+            "Strict tone selected due to high delay, high amount, or repeatedly late payments."
+        )
     elif delay_days >= 5 or invoice.amount >= 1500 or late_rate >= 0.3:
         recommended = Tone.PROFESSIONAL
         rationale = "Professional tone selected due to moderate delay, invoice amount, or mixed payment history."
@@ -98,9 +109,7 @@ def recommend_follow_up_tone_with_context(
     final_tone = recommended
     if fallback_tone and _TONE_SCORE[fallback_tone] > _TONE_SCORE[recommended]:
         final_tone = fallback_tone
-        rationale = (
-            f"Manual baseline tone '{fallback_tone.value}' is stricter than the smart recommendation; honoring stricter tone."
-        )
+        rationale = f"Manual baseline tone '{fallback_tone.value}' is stricter than the smart recommendation; honoring stricter tone."
 
     factors = {
         "delay_days": delay_days,

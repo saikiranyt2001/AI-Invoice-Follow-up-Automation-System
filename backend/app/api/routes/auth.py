@@ -11,7 +11,16 @@ from app.api.support import get_active_company, issue_auth_tokens
 from app.config import get_settings
 from app.database import get_db
 from app.models import Company, CompanyMembership, RefreshToken, RevokedAccessToken, User, UserRole
-from app.schemas import LogoutRequest, MfaEnableRequest, MfaSetupOut, TokenOut, TokenRefreshRequest, UserCreate, UserLogin, UserOut
+from app.schemas import (
+    LogoutRequest,
+    MfaEnableRequest,
+    MfaSetupOut,
+    TokenOut,
+    TokenRefreshRequest,
+    UserCreate,
+    UserLogin,
+    UserOut,
+)
 from app.security import (
     bearer_scheme,
     decode_access_token,
@@ -33,15 +42,21 @@ def _default_company_name(user: User) -> str:
 
 @router.post("/signup", response_model=TokenOut)
 def signup(payload: UserCreate, db: Session = Depends(get_db)):
-    existing = db.scalar(select(User).where((User.email == payload.email) | (User.username == payload.username)))
+    existing = db.scalar(
+        select(User).where((User.email == payload.email) | (User.username == payload.username))
+    )
     if existing:
-        raise HTTPException(status_code=400, detail="User with this email or username already exists")
-    admin_count = db.scalar(select(func.count()).select_from(User).where(User.role == UserRole.ADMIN)) or 0
+        raise HTTPException(
+            status_code=400, detail="User with this email or username already exists"
+        )
+    admin_count = (
+        db.scalar(select(func.count()).select_from(User).where(User.role == UserRole.ADMIN)) or 0
+    )
     should_be_admin = admin_count == 0
     user = User(
         username=payload.username.strip(),
         email=payload.email.strip().lower(),
-        role=UserRole.ADMIN if should_be_admin else UserRole.TEAM,
+        role=UserRole.ADMIN if should_be_admin else UserRole.VIEWER,
         password_hash=hash_password(payload.password),
     )
     db.add(user)
@@ -64,7 +79,11 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if bool(user.mfa_enabled):
-        if not payload.otp_code or not user.mfa_secret or not verify_totp(user.mfa_secret, payload.otp_code):
+        if (
+            not payload.otp_code
+            or not user.mfa_secret
+            or not verify_totp(user.mfa_secret, payload.otp_code)
+        ):
             raise HTTPException(status_code=401, detail="MFA code required or invalid")
     return issue_auth_tokens(db, user, get_settings().auth_refresh_token_days)
 
@@ -110,7 +129,11 @@ def logout(
 
 @router.post("/logout-all")
 def logout_all(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    tokens = db.scalars(select(RefreshToken).where(RefreshToken.user_id == current_user.id, RefreshToken.revoked == 0)).all()
+    tokens = db.scalars(
+        select(RefreshToken).where(
+            RefreshToken.user_id == current_user.id, RefreshToken.revoked == 0
+        )
+    ).all()
     for row in tokens:
         row.revoked = 1
     db.commit()
@@ -129,7 +152,11 @@ def setup_mfa(db: Session = Depends(get_db), current_user: User = Depends(get_cu
 
 
 @router.post("/mfa/enable")
-def enable_mfa(payload: MfaEnableRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def enable_mfa(
+    payload: MfaEnableRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     if not current_user.mfa_secret:
         raise HTTPException(status_code=400, detail="MFA is not initialized")
     if not verify_totp(current_user.mfa_secret, payload.otp_code):
@@ -140,7 +167,11 @@ def enable_mfa(payload: MfaEnableRequest, db: Session = Depends(get_db), current
 
 
 @router.post("/mfa/disable")
-def disable_mfa(payload: MfaEnableRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def disable_mfa(
+    payload: MfaEnableRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     if not current_user.mfa_secret or not bool(current_user.mfa_enabled):
         return {"ok": True, "mfa_enabled": False}
     if not verify_totp(current_user.mfa_secret, payload.otp_code):

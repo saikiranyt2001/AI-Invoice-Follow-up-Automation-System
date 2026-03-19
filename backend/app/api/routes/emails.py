@@ -9,10 +9,15 @@ from sqlalchemy.orm import Session
 from app.api.support import enqueue_job, get_active_company, record_audit_event
 from app.database import get_db
 from app.models import EmailStatus, Invoice, InvoiceStatus, ReminderEmail, User
-from app.schemas import EmailGenerateRequest, ReminderEmailOut, ReminderEmailUpdate, SendEmailRequest
-from app.security import get_current_user
-from app.services.email_service import create_pending_reminder
+from app.schemas import (
+    EmailGenerateRequest,
+    ReminderEmailOut,
+    ReminderEmailUpdate,
+    SendEmailRequest,
+)
+from app.security import require_accountant_or_admin, require_read_only_or_higher
 from app.services.ai_service import recommend_follow_up_tone_with_context
+from app.services.email_service import create_pending_reminder
 
 router = APIRouter(tags=["emails"])
 
@@ -21,7 +26,7 @@ router = APIRouter(tags=["emails"])
 def generate_email(
     payload: EmailGenerateRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_accountant_or_admin),
 ):
     active_company = get_active_company(db, current_user)
     invoice = db.get(Invoice, payload.invoice_id)
@@ -71,7 +76,9 @@ def generate_email(
 
 
 @router.get("/emails/pending-approvals", response_model=list[ReminderEmailOut])
-def pending_approvals(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def pending_approvals(
+    db: Session = Depends(get_db), current_user: User = Depends(require_read_only_or_higher)
+):
     active_company = get_active_company(db, current_user)
     return db.scalars(
         select(ReminderEmail)
@@ -84,7 +91,9 @@ def pending_approvals(db: Session = Depends(get_db), current_user: User = Depend
 
 
 @router.get("/emails", response_model=list[ReminderEmailOut])
-def list_emails(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def list_emails(
+    db: Session = Depends(get_db), current_user: User = Depends(require_read_only_or_higher)
+):
     active_company = get_active_company(db, current_user)
     return db.scalars(
         select(ReminderEmail)
@@ -98,7 +107,7 @@ def edit_email(
     email_id: int,
     payload: ReminderEmailUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_accountant_or_admin),
 ):
     active_company = get_active_company(db, current_user)
     reminder = db.get(ReminderEmail, email_id)
@@ -118,7 +127,7 @@ def approve_email(
     email_id: int,
     payload: SendEmailRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_accountant_or_admin),
 ):
     active_company = get_active_company(db, current_user)
     reminder = db.get(ReminderEmail, email_id)
@@ -155,13 +164,17 @@ def send_email_direct(
     email_id: int,
     payload: SendEmailRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_accountant_or_admin),
 ):
     active_company = get_active_company(db, current_user)
     reminder = db.get(ReminderEmail, email_id)
     if not reminder or reminder.company_id != active_company.id:
         raise HTTPException(status_code=404, detail="Email not found")
-    if reminder.status not in {EmailStatus.PENDING_APPROVAL, EmailStatus.APPROVED, EmailStatus.FAILED}:
+    if reminder.status not in {
+        EmailStatus.PENDING_APPROVAL,
+        EmailStatus.APPROVED,
+        EmailStatus.FAILED,
+    }:
         raise HTTPException(status_code=400, detail="Email cannot be sent in current state")
     if reminder.status == EmailStatus.PENDING_APPROVAL:
         reminder.status = EmailStatus.APPROVED
@@ -189,7 +202,11 @@ def send_email_direct(
 
 
 @router.post("/emails/{email_id}/reject", response_model=ReminderEmailOut)
-def reject_email(email_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def reject_email(
+    email_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_accountant_or_admin),
+):
     active_company = get_active_company(db, current_user)
     reminder = db.get(ReminderEmail, email_id)
     if not reminder or reminder.company_id != active_company.id:

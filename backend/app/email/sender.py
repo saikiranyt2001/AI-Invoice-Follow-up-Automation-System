@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import base64
-from email.message import EmailMessage
-import smtplib
 import secrets
+import smtplib
+from email.message import EmailMessage
 
 import httpx
 
@@ -35,7 +35,7 @@ def send_with_smtp(
         msg.add_alternative(
             (
                 f"<html><body><p>{body.replace(chr(10), '<br/>')}</p>"
-                f"<img src=\"{tracking_pixel_url}\" width=\"1\" height=\"1\" alt=\"\" />"
+                f'<img src="{tracking_pixel_url}" width="1" height="1" alt="" />'
                 "</body></html>"
             ),
             subtype="html",
@@ -72,7 +72,7 @@ def send_with_gmail_api(
     message.add_alternative(
         (
             f"<html><body><p>{body.replace(chr(10), '<br/>')}</p>"
-            f"<img src=\"{tracking_pixel_url}\" width=\"1\" height=\"1\" alt=\"\" />"
+            f'<img src="{tracking_pixel_url}" width="1" height="1" alt="" />'
             "</body></html>"
         ),
         subtype="html",
@@ -109,7 +109,7 @@ def send_with_sendgrid(
         return False, "SendGrid API key or from email is missing"
 
     from_email = settings.sendgrid_from_email or settings.smtp_from
-    html_body = f"<p>{body.replace(chr(10), '<br/>')}</p><img src=\"{tracking_pixel_url}\" width=\"1\" height=\"1\" alt=\"\" />"
+    html_body = f'<p>{body.replace(chr(10), "<br/>")}</p><img src="{tracking_pixel_url}" width="1" height="1" alt="" />'
 
     payload = {
         "personalizations": [{"to": [{"email": to_email}]}],
@@ -143,7 +143,11 @@ def send_with_sms(recipient_hint: str, body: str) -> tuple[bool, str | None]:
         return False, "SMS channel is not enabled"
     if settings.sms_dry_run:
         return True, f"sid:{_dry_run_twilio_sid()}"
-    if not settings.twilio_account_sid or not settings.twilio_auth_token or not settings.twilio_from_number:
+    if (
+        not settings.twilio_account_sid
+        or not settings.twilio_auth_token
+        or not settings.twilio_from_number
+    ):
         return False, "Twilio credentials are not configured"
 
     to_number = recipient_hint.strip()

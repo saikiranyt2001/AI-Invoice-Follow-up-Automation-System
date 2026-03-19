@@ -8,12 +8,11 @@ import httpx
 from app.config import get_settings
 from app.models import Invoice, Tone
 
-
-# Default follow-up plan: Day 3, Day 7, Day 14.
+# Default follow-up plan: Day 1, Day 5, Day 10.
 AUTOMATION_CADENCE: list[tuple[int, Tone]] = [
-    (3, Tone.FRIENDLY),
-    (7, Tone.PROFESSIONAL),
-    (14, Tone.STRICT),
+    (1, Tone.FRIENDLY),
+    (5, Tone.PROFESSIONAL),
+    (10, Tone.STRICT),
 ]
 
 
@@ -67,7 +66,7 @@ def generate_email_content(
         body = (
             f"Dear {invoice.customer_name},\n\n"
             f"This is an urgent notice that invoice #{invoice.id} for ${invoice.amount:,.2f}, due on {invoice.due_date}, remains unpaid.\n\n"
-            f"Payment link: {payment_link}\n\n"
+            f"Pay Now: {payment_link}\n\n"
             "Immediate action is required. Please settle the outstanding amount without further delay.\n\n"
             "If payment has already been made, provide confirmation so we can update our records."
         )
@@ -76,7 +75,7 @@ def generate_email_content(
             f"Hi {invoice.customer_name},\n\n"
             f"I hope you are doing well. This is a friendly reminder that invoice #{invoice.id} for ${invoice.amount:,.2f} "
             f"was due on {invoice.due_date}.\n\n"
-            f"You can complete payment securely here: {payment_link}\n\n"
+            f"Pay Now: {payment_link}\n\n"
             "If you have already made the payment, please ignore this message. "
             "Otherwise, we would appreciate it if you could process it at your earliest convenience.\n\n"
             "Thanks so much!"
@@ -86,7 +85,7 @@ def generate_email_content(
             f"Dear {invoice.customer_name},\n\n"
             f"This is a payment reminder regarding invoice #{invoice.id} for ${invoice.amount:,.2f}, "
             f"which was due on {invoice.due_date}.\n\n"
-            f"You can pay online using this link: {payment_link}\n\n"
+            f"Pay Now: {payment_link}\n\n"
             "Please arrange payment at your earliest convenience. "
             "If you have already completed the payment, kindly disregard this reminder.\n\n"
             "Best regards,\nAccounts Team"
