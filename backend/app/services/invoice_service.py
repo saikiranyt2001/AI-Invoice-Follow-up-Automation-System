@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import Invoice, InvoiceStatus
+from app.time_utils import utcnow
 
 
 def is_overdue(invoice: Invoice) -> bool:
@@ -41,7 +42,7 @@ def mark_invoice_paid(db: Session, invoice: Invoice, payment_reference: str) -> 
 
     invoice.status = InvoiceStatus.PAID
     invoice.payment_reference = payment_reference.strip()
-    invoice.paid_at = datetime.utcnow()
+    invoice.paid_at = utcnow()
     db.commit()
     db.refresh(invoice)
     return invoice

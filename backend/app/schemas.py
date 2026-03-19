@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.email.templates import MessageStyle
 from app.models import EmailStatus, InvoiceStatus, Tone, UserRole
@@ -25,8 +25,7 @@ class UserOut(BaseModel):
     active_company_id: int | None = None
     mfa_enabled: bool = False
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TokenOut(BaseModel):
@@ -112,8 +111,7 @@ class CompanyOut(BaseModel):
     name: str
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class InvoiceCreate(BaseModel):
@@ -137,8 +135,7 @@ class InvoiceOut(BaseModel):
     payment_reference: str | None = None
     paid_at: datetime | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class InvoiceStatusUpdate(BaseModel):
@@ -178,8 +175,7 @@ class ReminderEmailOut(BaseModel):
     tone_factors_json: str | None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DashboardStats(BaseModel):

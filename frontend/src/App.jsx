@@ -215,6 +215,14 @@ function App() {
     To: "+14155552671",
     From: "whatsapp:+14155238886",
   });
+  const [themeMode, setThemeMode] = useState(() => {
+    try {
+      const saved = localStorage.getItem("ui-theme");
+      return saved === "dark" ? "dark" : "light";
+    } catch {
+      return "light";
+    }
+  });
   const [audienceMode, setAudienceMode] = useState("ops");
   const [displayStats, setDisplayStats] = useState({
     total_invoices: 0,
@@ -244,6 +252,21 @@ function App() {
   const setLoadingState = (key, value) => {
     setLoadingStates((prev) => ({ ...prev, [key]: value }));
   };
+
+  const notify = (nextMessage, type = "info") => {
+    setMessage(nextMessage || "");
+    if (nextMessage) {
+      addToast(nextMessage, type);
+    }
+  };
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("ui-theme", themeMode);
+    } catch {
+      // Ignore local storage failures.
+    }
+  }, [themeMode]);
 
   const teamPrefsStorageKey = useMemo(
     () => (currentUser?.id ? `team_view_prefs:${currentUser.id}` : ""),
@@ -630,9 +653,9 @@ function App() {
       setRefreshToken(response.refresh_token || "");
       setCurrentUser(response.user);
       setAuthForm(initialAuthForm);
-      setMessage(`Welcome, ${response.user.username}.`);
+      notify(`Welcome, ${response.user.username}.`, "success");
     } catch (error) {
-      setMessage(error.message || "Authentication failed");
+      notify(error.message || "Authentication failed", "error");
     }
   }
 
@@ -662,16 +685,16 @@ function App() {
     setQueueJobs([]);
     setQueueStats({ queued: 0, processing: 0, succeeded: 0, failed: 0 });
     setOpsMetrics(null);
-    setMessage("Logged out.");
+    notify("Logged out.", "info");
   }
 
   async function handleRunQueueNow() {
     try {
       const result = await api.runQueueNow(25);
-      setMessage(`Queue run: picked ${result.picked}, succeeded ${result.succeeded}, failed ${result.failed}.`);
+      notify(`Queue run: picked ${result.picked}, succeeded ${result.succeeded}, failed ${result.failed}.`, "success");
       loadData();
     } catch (error) {
-      setMessage(error.message || "Unable to run queue now");
+      notify(error.message || "Unable to run queue now", "error");
     }
   }
 
@@ -687,10 +710,10 @@ function App() {
         payload.MessageSid = webhookSimulator.MessageSid.trim();
       }
       await api.simulateTwilioStatus(payload);
-      setMessage(`Twilio webhook simulated: ${payload.MessageStatus}`);
+      notify(`Twilio webhook simulated: ${payload.MessageStatus}`, "success");
       loadData();
     } catch (error) {
-      setMessage(error.message || "Twilio webhook simulation failed");
+      notify(error.message || "Twilio webhook simulation failed", "error");
     }
   }
 
@@ -702,10 +725,10 @@ function App() {
         amount: Number(invoiceForm.amount),
       });
       setInvoiceForm(initialInvoiceForm);
-      setMessage("Invoice created successfully.");
+      notify("Invoice created successfully.", "success");
       loadData();
     } catch (error) {
-      setMessage(error.message || "Unable to create invoice");
+      notify(error.message || "Unable to create invoice", "error");
     }
   }
 
@@ -716,10 +739,10 @@ function App() {
     }
     try {
       const result = await api.uploadInvoicesFile(file);
-      setMessage(`Imported ${result.created_count} invoices from ${file.name}.`);
+      notify(`Imported ${result.created_count} invoices from ${file.name}.`, "success");
       loadData();
     } catch (error) {
-      setMessage(error.message || "Invoice upload failed");
+      notify(error.message || "Invoice upload failed", "error");
     } finally {
       event.target.value = "";
     }
@@ -727,7 +750,7 @@ function App() {
 
   async function handleGenerateEmail() {
     if (!selectedInvoiceId) {
-      setMessage("Select an invoice first.");
+      notify("Select an invoice first.", "info");
       return;
     }
 
@@ -741,51 +764,51 @@ function App() {
       }
 
       await api.generateEmail(payload);
-      setMessage("Email draft generated and moved to pending approval.");
+      notify("Email draft generated and moved to pending approval.", "success");
       loadData();
     } catch (error) {
-      setMessage(error.message || "Failed to generate email");
+      notify(error.message || "Failed to generate email", "error");
     }
   }
 
   async function handleApprove(id) {
     try {
       await api.approveEmail(id, deliveryProvider);
-      setMessage(`Email approved and queued via ${deliveryProvider}.`);
+      notify(`Email approved and queued via ${deliveryProvider}.`, "success");
       setEditingEmail(null);
       loadData();
     } catch (error) {
-      setMessage(error.message || "Approve/send failed");
+      notify(error.message || "Approve/send failed", "error");
     }
   }
 
   async function handleReject(id) {
     try {
       await api.rejectEmail(id);
-      setMessage("Email rejected.");
+      notify("Email rejected.", "success");
       setEditingEmail(null);
       loadData();
     } catch (error) {
-      setMessage(error.message || "Reject failed");
+      notify(error.message || "Reject failed", "error");
     }
   }
 
   async function handleSendNow(id) {
     try {
       await api.sendEmail(id, deliveryProvider);
-      setMessage(`Email queued via ${deliveryProvider}.`);
+      notify(`Email queued via ${deliveryProvider}.`, "success");
       loadData();
     } catch (error) {
-      setMessage(error.message || "Send failed");
+      notify(error.message || "Send failed", "error");
     }
   }
 
   async function handleDownloadInvoicePdf(id) {
     try {
       await api.downloadInvoicePdf(id);
-      setMessage(`Invoice #${id} PDF downloaded.`);
+      notify(`Invoice #${id} PDF downloaded.`, "success");
     } catch (error) {
-      setMessage(error.message || "Invoice PDF download failed");
+      notify(error.message || "Invoice PDF download failed", "error");
     }
   }
 
@@ -798,10 +821,10 @@ function App() {
         subject: editingEmail.subject,
         body: editingEmail.body,
       });
-      setMessage("Pending email updated.");
+      notify("Pending email updated.", "success");
       loadData();
     } catch (error) {
-      setMessage(error.message || "Edit failed");
+      notify(error.message || "Edit failed", "error");
     }
   }
 
@@ -811,10 +834,10 @@ function App() {
         source: integrationSource,
         count: Number(integrationCount),
       });
-      setMessage(`Imported ${created.length} invoices from ${integrationSource}.`);
+      notify(`Imported ${created.length} invoices from ${integrationSource}.`, "success");
       loadData();
     } catch (error) {
-      setMessage(error.message || "Integration import failed");
+      notify(error.message || "Integration import failed", "error");
     }
   }
 
@@ -830,7 +853,7 @@ function App() {
           "",
         );
         if (!code) {
-          setMessage("QuickBooks connect canceled: no code provided.");
+          notify("QuickBooks connect canceled: no code provided.", "info");
           return;
         }
 
@@ -839,35 +862,35 @@ function App() {
           started.state,
         );
         await api.completeIntegrationOAuth(provider, code, stateInput || started.state);
-        setMessage("quickbooks connected (live OAuth).");
+        notify("quickbooks connected (live OAuth).", "success");
       } else {
         await api.completeIntegrationOAuth(provider, "demo-code", started.state);
-        setMessage(`${provider} connected (OAuth scaffold).`);
+        notify(`${provider} connected (OAuth scaffold).`, "success");
       }
 
       loadData();
     } catch (error) {
-      setMessage(error.message || "Unable to connect integration");
+      notify(error.message || "Unable to connect integration", "error");
     }
   }
 
   async function handleDisconnectIntegration(provider) {
     try {
       await api.disconnectIntegration(provider);
-      setMessage(`${provider} disconnected.`);
+      notify(`${provider} disconnected.`, "success");
       loadData();
     } catch (error) {
-      setMessage(error.message || "Unable to disconnect integration");
+      notify(error.message || "Unable to disconnect integration", "error");
     }
   }
 
   async function handleSyncIntegration(provider) {
     try {
       const created = await api.syncIntegrationInvoices(provider, Number(integrationCount) || 5);
-      setMessage(`Synced ${created.length} invoices from ${provider}.`);
+      notify(`Synced ${created.length} invoices from ${provider}.`, "success");
       loadData();
     } catch (error) {
-      setMessage(error.message || "Unable to sync integration invoices");
+      notify(error.message || "Unable to sync integration invoices", "error");
     }
   }
 
@@ -881,10 +904,10 @@ function App() {
         role: teamForm.role,
       });
       setTeamForm(initialTeamForm);
-      setMessage("Team user created.");
+      notify("Team user created.", "success");
       loadData();
     } catch (error) {
-      setMessage(error.message || "Unable to create team user");
+      notify(error.message || "Unable to create team user", "error");
     }
   }
 
@@ -892,17 +915,17 @@ function App() {
     event.preventDefault();
     const email = inviteEmail.trim();
     if (!email) {
-      setMessage("Email is required to invite a user.");
+      notify("Email is required to invite a user.", "info");
       return;
     }
 
     try {
       await api.inviteToActiveCompany(email);
       setInviteEmail("");
-      setMessage(`User ${email} invited to ${activeCompany?.name || "active company"}.`);
+      notify(`User ${email} invited to ${activeCompany?.name || "active company"}.`, "success");
       loadData();
     } catch (error) {
-      setMessage(error.message || "Unable to invite user");
+      notify(error.message || "Unable to invite user", "error");
     }
   }
 
@@ -914,10 +937,10 @@ function App() {
 
     try {
       await api.removeFromActiveCompany(userId);
-      setMessage(`${username} removed from active company.`);
+      notify(`${username} removed from active company.`, "success");
       loadData();
     } catch (error) {
-      setMessage(error.message || "Unable to remove user");
+      notify(error.message || "Unable to remove user", "error");
     }
   }
 
@@ -961,7 +984,7 @@ function App() {
     event.preventDefault();
     const trimmedName = newCompanyName.trim();
     if (!trimmedName) {
-      setMessage("Company name is required.");
+      notify("Company name is required.", "info");
       return;
     }
 
@@ -969,9 +992,9 @@ function App() {
       const created = await api.createCompany({ name: trimmedName });
       setCompanies((prev) => [...prev, created]);
       setNewCompanyName("");
-      setMessage(`Company \"${created.name}\" created.`);
+      notify(`Company \"${created.name}\" created.`, "success");
     } catch (error) {
-      setMessage(error.message || "Unable to create company");
+      notify(error.message || "Unable to create company", "error");
     }
   }
 
@@ -985,10 +1008,10 @@ function App() {
       setSwitchingCompany(true);
       const updatedUser = await api.switchCompany(companyId);
       setCurrentUser(updatedUser);
-      setMessage("Active company switched.");
+      notify("Active company switched.", "success");
       await loadData();
     } catch (error) {
-      setMessage(error.message || "Unable to switch company");
+      notify(error.message || "Unable to switch company", "error");
     } finally {
       setSwitchingCompany(false);
     }
@@ -998,16 +1021,16 @@ function App() {
     try {
       const ref = `MANUAL-${invoiceId}-${Date.now()}`;
       await api.markInvoicePaid(invoiceId, ref);
-      setMessage("Invoice marked as paid.");
+      notify("Invoice marked as paid.", "success");
       loadData();
     } catch (error) {
-      setMessage(error.message || "Unable to mark invoice as paid");
+      notify(error.message || "Unable to mark invoice as paid", "error");
     }
   }
 
   if (authLoading) {
     return (
-      <div className="app-shell">
+      <div className={`app-shell theme-${themeMode}`}>
         <section className="panel">
           <h3>Loading</h3>
           <p>Checking session...</p>
@@ -1018,11 +1041,20 @@ function App() {
 
   if (!currentUser) {
     return (
-      <div className="app-shell">
+      <div className={`app-shell theme-${themeMode}`}>
         <header className="hero">
           <p className="eyebrow">AI Invoice Follow-up Automation</p>
           <h1>Secure Access</h1>
           <p>Sign in to access your personal dashboard and protected APIs.</p>
+          <button
+            type="button"
+            className="theme-toggle"
+            aria-label="Toggle dark mode"
+            aria-pressed={themeMode === "dark"}
+            onClick={() => setThemeMode((prev) => (prev === "dark" ? "light" : "dark"))}
+          >
+            Theme: {themeMode === "dark" ? "Dark" : "Light"}
+          </button>
         </header>
 
         {message && <div className="alert">{message}</div>}
@@ -1082,11 +1114,20 @@ function App() {
   }
 
   return (
-    <div className={`app-shell role-${roleKey}`}>
+    <div className={`app-shell role-${roleKey} theme-${themeMode}`}>
       <header className="hero">
         <p className="eyebrow">AI Invoice Follow-up Automation</p>
         <h1>{audience.heroTitle}</h1>
         <p>{audience.heroSubtitle}</p>
+        <button
+          type="button"
+          className="theme-toggle"
+          aria-label="Toggle dark mode"
+          aria-pressed={themeMode === "dark"}
+          onClick={() => setThemeMode((prev) => (prev === "dark" ? "light" : "dark"))}
+        >
+          Theme: {themeMode === "dark" ? "Dark" : "Light"}
+        </button>
         <div className="audience-switch" role="group" aria-label="Audience Profile">
           {AUDIENCE_MODES.map((item) => (
             <button

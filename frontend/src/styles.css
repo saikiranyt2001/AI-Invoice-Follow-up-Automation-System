@@ -67,6 +67,34 @@ body {
   --brand-dark: #0a5751;
 }
 
+.app-shell.theme-dark {
+  --bg-main: #0d1513;
+  --bg-soft: #14201d;
+  --surface: #1b2a26;
+  --surface-alt: #22342f;
+  --line: #355047;
+  --line-strong: #48675d;
+  --text: #e9f4ef;
+  --muted: #a8b9b2;
+  --shadow-soft: 0 10px 28px rgba(0, 0, 0, 0.35);
+  --shadow-strong: 0 22px 52px rgba(0, 0, 0, 0.45);
+}
+
+.app-shell.theme-dark .panel,
+.app-shell.theme-dark .card,
+.app-shell.theme-dark table,
+.app-shell.theme-dark .tabs button {
+  color: var(--text);
+}
+
+.app-shell.theme-dark .tabs button {
+  background: rgba(23, 36, 32, 0.92);
+}
+
+.app-shell.theme-dark .hero {
+  background: linear-gradient(120deg, #071110 0%, #0f2521 56%, #1b3b34 100%);
+}
+
 .app-shell::before,
 .app-shell::after {
   content: "";
@@ -185,6 +213,31 @@ body {
   transform: none;
   box-shadow: none;
   background: rgba(255, 255, 255, 0.14);
+}
+
+.theme-toggle {
+  margin-top: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #eef8f4;
+  padding: 8px 13px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.theme-toggle:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid rgba(194, 106, 47, 0.45);
+  outline-offset: 2px;
 }
 
 .signed-in-user {

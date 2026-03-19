@@ -12,6 +12,7 @@ from app.email.sender import send_reminder_via_provider
 from app.models import EmailStatus, Invoice, ReminderEmail, Tone
 from app.services.ai_service import generate_reminder_content
 from app.services.invoice_service import build_payment_link
+from app.time_utils import utcnow
 
 
 def create_pending_reminder(
@@ -49,7 +50,7 @@ def send_reminder_email(db: Session, reminder: ReminderEmail, provider: str = "s
         db.refresh(reminder)
         return reminder
 
-    now = datetime.utcnow()
+    now = utcnow()
 
     if not reminder.tracking_token:
         reminder.tracking_token = secrets.token_urlsafe(18)
@@ -106,7 +107,7 @@ def mark_email_opened(db: Session, token: str) -> ReminderEmail | None:
         return None
 
     if reminder.opened_at is None:
-        reminder.opened_at = datetime.utcnow()
+        reminder.opened_at = utcnow()
     reminder.status = EmailStatus.OPENED
 
     db.commit()
@@ -120,7 +121,7 @@ def mark_email_clicked(db: Session, token: str) -> ReminderEmail | None:
         return None
 
     reminder.click_count = int(reminder.click_count or 0) + 1
-    reminder.clicked_at = datetime.utcnow()
+    reminder.clicked_at = utcnow()
     if reminder.opened_at is None:
         reminder.opened_at = reminder.clicked_at
     reminder.status = EmailStatus.OPENED
@@ -132,7 +133,7 @@ def mark_email_clicked(db: Session, token: str) -> ReminderEmail | None:
 
 def retry_failed_emails(db: Session) -> dict[str, int]:
     settings = get_settings()
-    min_next_attempt = datetime.utcnow() - timedelta(minutes=max(1, settings.retry_delay_minutes))
+    min_next_attempt = utcnow() - timedelta(minutes=max(1, settings.retry_delay_minutes))
 
     failed_emails = db.scalars(select(ReminderEmail).where(ReminderEmail.status == EmailStatus.FAILED)).all()
 

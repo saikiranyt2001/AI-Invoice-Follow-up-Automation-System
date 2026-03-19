@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.models import Invoice
+from app.time_utils import utcnow
 
 
 def _pdf_escape(value: str) -> str:
@@ -12,7 +13,7 @@ def _pdf_escape(value: str) -> str:
 def build_invoice_pdf(invoice: Invoice, payment_url: str, company_name: str) -> bytes:
     lines = [
         f"Invoice #{invoice.id}",
-        f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC",
+        f"Generated: {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC",
         "",
         f"Company: {company_name}",
         f"Customer: {invoice.customer_name}",

@@ -22,6 +22,7 @@ from app.security import (
     verify_password,
     verify_totp,
 )
+from app.time_utils import utcnow
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -72,7 +73,7 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
 def refresh_access_token(payload: TokenRefreshRequest, db: Session = Depends(get_db)):
     token_hash = hash_refresh_token(payload.refresh_token)
     row = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
-    if not row or bool(row.revoked) or row.expires_at < datetime.utcnow():
+    if not row or bool(row.revoked) or row.expires_at < utcnow():
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
     user = db.get(User, row.user_id)
     if not user:

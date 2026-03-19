@@ -118,6 +118,7 @@ from app.services import (
     run_automation_cycle,
     send_reminder_email,
 )
+from app.time_utils import utcnow
 
 Base.metadata.create_all(bind=engine)
 run_lightweight_migrations()
@@ -155,7 +156,7 @@ def _get_redis_client() -> Any:
 def _issue_auth_tokens(db: Session, user: User) -> TokenOut:
     access_token = create_access_token(user.email)
     refresh_raw = refresh_token_raw()
-    expires_at = datetime.utcnow() + timedelta(days=max(1, get_settings().auth_refresh_token_days))
+    expires_at = utcnow() + timedelta(days=max(1, get_settings().auth_refresh_token_days))
     db.add(
         RefreshToken(
             user_id=user.id,
@@ -240,8 +241,8 @@ def _enqueue_job(
         status="queued",
         attempts=0,
         max_attempts=max(1, max_attempts),
-        available_at=available_at or datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        available_at=available_at or utcnow(),
+        updated_at=utcnow(),
     )
     db.add(job)
     db.commit()
@@ -260,7 +261,7 @@ def _has_active_job(db: Session, job_type: str) -> bool:
 
 
 def _process_queued_jobs(db: Session, limit: int = 10) -> dict[str, int]:
-    now = datetime.utcnow()
+    now = utcnow()
     jobs = db.scalars(
         select(JobQueue)
         .where(
@@ -274,7 +275,7 @@ def _process_queued_jobs(db: Session, limit: int = 10) -> dict[str, int]:
     summary = {"picked": len(jobs), "succeeded": 0, "failed": 0, "requeued": 0}
     for job in jobs:
         job.status = "processing"
-        job.updated_at = datetime.utcnow()
+        job.updated_at = utcnow()
         db.commit()
 
         try:
@@ -303,14 +304,14 @@ def _process_queued_jobs(db: Session, limit: int = 10) -> dict[str, int]:
             job.last_error = str(exc)
             if job.attempts < job.max_attempts:
                 job.status = "queued"
-                job.available_at = datetime.utcnow() + timedelta(seconds=20)
+                job.available_at = utcnow() + timedelta(seconds=20)
                 summary["requeued"] += 1
             else:
                 job.status = "failed"
                 summary["failed"] += 1
             logger.exception("Queue job failed: id=%s type=%s", job.id, job.job_type)
         finally:
-            job.updated_at = datetime.utcnow()
+            job.updated_at = utcnow()
             db.commit()
 
     return summary
@@ -735,11 +736,11 @@ def email_status_webhook(
     if reminder:
         if payload.status == "delivered":
             reminder.status = EmailStatus.DELIVERED
-            reminder.delivered_at = datetime.utcnow()
+            reminder.delivered_at = utcnow()
         elif payload.status == "opened":
             reminder.status = EmailStatus.OPENED
             if reminder.opened_at is None:
-                reminder.opened_at = datetime.utcnow()
+                reminder.opened_at = utcnow()
         elif payload.status == "failed":
             reminder.status = EmailStatus.FAILED
             reminder.failure_reason = payload.error_message or "Provider reported failure"
@@ -786,7 +787,7 @@ def twilio_status_webhook(payload: TwilioStatusWebhookIn, request: Request, db: 
         )
     if reminder:
         normalized = payload.MessageStatus.lower()
-        now = datetime.utcnow()
+        now = utcnow()
 
         if normalized in {"queued", "accepted", "sending"}:
             reminder.status = EmailStatus.SENT
@@ -1058,7 +1059,7 @@ def start_integration_oauth(provider: str, db: Session = Depends(get_db), curren
     connection = _get_or_create_integration_connection(db, active_company.id, provider)
     connection.oauth_state = state
     connection.last_error = None
-    connection.updated_at = datetime.utcnow()
+    connection.updated_at = utcnow()
     db.commit()
 
     return IntegrationOAuthStartOut(provider=provider, auth_url=_build_integration_auth_url(provider, state), state=state)
@@ -1080,7 +1081,7 @@ def complete_integration_oauth(
     if not connection.oauth_state or connection.oauth_state != payload.state:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
-    now = datetime.utcnow()
+    now = utcnow()
     if provider == "quickbooks" and _integration_mode(provider) == "oauth_live" and payload.code != "demo-code":
         access_token, refresh_token = _exchange_quickbooks_code(payload.code)
         connection.access_token = access_token
@@ -1119,7 +1120,7 @@ def disconnect_integration(provider: str, db: Session = Depends(get_db), current
     connection.oauth_state = None
     connection.access_token = None
     connection.refresh_token = None
-    connection.updated_at = datetime.utcnow()
+    connection.updated_at = utcnow()
     db.commit()
     db.refresh(connection)
 
@@ -1167,9 +1168,9 @@ def sync_integration_invoices(
         db.flush()
         created.append(invoice_to_out(invoice, db))
 
-    connection.last_synced_at = datetime.utcnow()
+    connection.last_synced_at = utcnow()
     connection.last_error = None
-    connection.updated_at = datetime.utcnow()
+    connection.updated_at = utcnow()
     db.commit()
     return created
 
@@ -1441,7 +1442,7 @@ def run_queue_now(
 @app.get("/ops/metrics", response_model=OpsMetricsOut)
 def ops_metrics(db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
     active_company = get_active_company(db, current_user)
-    now = datetime.utcnow()
+    now = utcnow()
     lookback = now - timedelta(hours=24)
 
     total_invoices = db.scalar(
@@ -1662,7 +1663,7 @@ def customer_history(db: Session = Depends(get_db), current_user: User = Depends
         key = invoice.customer_email.strip().lower()
         groups.setdefault(key, []).append(invoice)
 
-    now = datetime.utcnow().date()
+    now = utcnow().date()
     output: list[CustomerHistoryOut] = []
 
     for _, items in groups.items():
@@ -1753,3 +1754,4 @@ def customer_history(db: Session = Depends(get_db), current_user: User = Depends
 
     output.sort(key=lambda item: (item.risk_score, item.outstanding_amount), reverse=True)
     return output
+

@@ -10,12 +10,13 @@ from app.models import AuditLog, Company, CompanyMembership, Invoice, JobQueue, 
 from app.schemas import InvoiceOut, TokenOut
 from app.security import create_access_token, hash_refresh_token, refresh_token_raw
 from app.services.invoice_service import build_payment_link, ensure_payment_token, is_overdue
+from app.time_utils import utcnow
 
 
 def issue_auth_tokens(db: Session, user: User, refresh_token_days: int) -> TokenOut:
     access_token = create_access_token(user.email)
     refresh_raw = refresh_token_raw()
-    expires_at = datetime.utcnow() + timedelta(days=max(1, refresh_token_days))
+    expires_at = utcnow() + timedelta(days=max(1, refresh_token_days))
     db.add(
         RefreshToken(
             user_id=user.id,
@@ -85,8 +86,8 @@ def enqueue_job(
         status="queued",
         attempts=0,
         max_attempts=max(1, max_attempts),
-        available_at=available_at or datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        available_at=available_at or utcnow(),
+        updated_at=utcnow(),
     )
     db.add(job)
     db.commit()

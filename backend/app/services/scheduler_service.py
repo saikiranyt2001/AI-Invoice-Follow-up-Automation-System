@@ -10,6 +10,7 @@ from app.config import get_settings
 from app.models import EmailStatus, Invoice, InvoiceStatus, ReminderEmail, Tone
 from app.services.ai_service import recommend_follow_up_tone_with_context
 from app.services.email_service import create_pending_reminder, retry_failed_emails, send_reminder_email
+from app.time_utils import utcnow
 
 
 def _automation_cadence() -> list[tuple[int, Tone]]:
@@ -28,7 +29,7 @@ def run_automation_cycle(db: Session) -> dict[str, int]:
     settings = get_settings()
     cadence = _automation_cadence()
     today = date.today()
-    cutoff = datetime.utcnow() - timedelta(days=max(0, settings.auto_reminder_min_days_since_last))
+    cutoff = utcnow() - timedelta(days=max(0, settings.auto_reminder_min_days_since_last))
 
     overdue_invoices = db.scalars(
         select(Invoice).where(Invoice.status == InvoiceStatus.PENDING, Invoice.due_date < today)

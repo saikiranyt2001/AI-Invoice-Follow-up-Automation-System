@@ -5,6 +5,8 @@ from contextlib import suppress
 from datetime import datetime, timedelta
 from typing import Awaitable, Callable
 
+from app.time_utils import utcnow
+
 
 class AutomationScheduler:
     def __init__(
@@ -28,7 +30,7 @@ class AutomationScheduler:
         if self._task and not self._task.done():
             return
         self._running = True
-        self._next_run_at = datetime.utcnow()
+        self._next_run_at = utcnow()
         self._task = asyncio.create_task(self._run_loop())
 
     async def stop(self) -> None:
@@ -42,26 +44,26 @@ class AutomationScheduler:
 
     async def _run_loop(self) -> None:
         while self._running:
-            now = datetime.utcnow()
+            now = utcnow()
             if self._is_enabled() and (self._next_run_at is None or now >= self._next_run_at):
                 self._last_tick_at = now
                 try:
                     self._tick()
-                    self._last_success_at = datetime.utcnow()
+                    self._last_success_at = utcnow()
                     self._last_error = None
                 except Exception as exc:  # pragma: no cover - handled by caller logging/tests through state
                     self._last_error = str(exc)
                 finally:
-                    self._next_run_at = datetime.utcnow() + timedelta(seconds=self._interval_seconds)
+                    self._next_run_at = utcnow() + timedelta(seconds=self._interval_seconds)
 
             await asyncio.sleep(5)
 
     def trigger_now(self) -> None:
-        self._last_tick_at = datetime.utcnow()
+        self._last_tick_at = utcnow()
         self._tick()
-        self._last_success_at = datetime.utcnow()
+        self._last_success_at = utcnow()
         self._last_error = None
-        self._next_run_at = datetime.utcnow() + timedelta(seconds=self._interval_seconds)
+        self._next_run_at = utcnow() + timedelta(seconds=self._interval_seconds)
 
     def status(self) -> dict[str, object]:
         return {
