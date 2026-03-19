@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Line, Bar } from "react-chartjs-2";
+import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, BarElement, Title, Tooltip, Legend } from "chart.js";
 import { api, getAuthToken, getRefreshToken, setAuthToken, setRefreshToken } from "./api";
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Title, Tooltip, Legend);
 
 const TONES = ["friendly", "professional", "strict"];
 const DELIVERY_PROVIDERS = ["smtp", "twilio_sms", "twilio_whatsapp"];
@@ -144,6 +148,27 @@ function EmptyState({ title, description, tone = "default" }) {
   );
 }
 
+function Toast({ message, type = "success", onClose }) {
+  return (
+    <div 
+      className={`toast toast-${type}`} 
+      role="status" 
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      <span className="toast-icon">{type === "success" ? "✓" : type === "error" ? "✕" : "ℹ"}</span>
+      <span className="toast-message">{message}</span>
+      <button 
+        className="toast-close" 
+        onClick={onClose}
+        aria-label="Close notification"
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
 function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [authMode, setAuthMode] = useState("login");
@@ -197,7 +222,28 @@ function App() {
     pending_invoices: 0,
     overdue_invoices: 0,
   });
+  const [toasts, setToasts] = useState([]);
+  const [loadingStates, setLoadingStates] = useState({
+    dashboard: false,
+    reports: false,
+    auth: false,
+    email: false,
+    queue: false,
+    team: false,
+  });
   const teamSearchInputRef = useRef(null);
+
+  const addToast = (message, type = "success", duration = 3000) => {
+    const id = Date.now();
+    setToasts((prev) => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, duration);
+  };
+
+  const setLoadingState = (key, value) => {
+    setLoadingStates((prev) => ({ ...prev, [key]: value }));
+  };
 
   const teamPrefsStorageKey = useMemo(
     () => (currentUser?.id ? `team_view_prefs:${currentUser.id}` : ""),
@@ -1529,7 +1575,7 @@ function App() {
         <section className="panel">
           <h3>Customer Payment History & Risk Trend</h3>
           <div className="table-wrap">
-            <table>
+            <table className="mobile-responsive">
               <thead>
                 <tr>
                   <th>Customer</th>
@@ -1557,14 +1603,14 @@ function App() {
                 )}
                 {customerHistory.map((entry) => (
                   <tr key={entry.customer_email}>
-                    <td>{entry.customer_name}</td>
-                    <td>{entry.customer_email}</td>
-                    <td>{entry.paid_invoices}/{entry.total_invoices}</td>
-                    <td>{entry.on_time_payment_rate}%</td>
-                    <td>{entry.average_days_late}</td>
-                    <td>${Number(entry.outstanding_amount || 0).toFixed(2)}</td>
-                    <td>{entry.risk_score}</td>
-                    <td>
+                    <td data-label="Customer">{entry.customer_name}</td>
+                    <td data-label="Email">{entry.customer_email}</td>
+                    <td data-label="Paid / Total">{entry.paid_invoices}/{entry.total_invoices}</td>
+                    <td data-label="On-time Rate">{entry.on_time_payment_rate}%</td>
+                    <td data-label="Avg Days Late">{entry.average_days_late}</td>
+                    <td data-label="Outstanding">${Number(entry.outstanding_amount || 0).toFixed(2)}</td>
+                    <td data-label="Risk Score">{entry.risk_score}</td>
+                    <td data-label="Risk Level">
                       <StatusBadge
                         label={entry.risk_level}
                         variant={
@@ -1576,7 +1622,7 @@ function App() {
                         }
                       />
                     </td>
-                    <td>
+                    <td data-label="6-Month Trend">
                       <TrendMiniBars points={entry.trend} />
                     </td>
                   </tr>
@@ -1617,39 +1663,67 @@ function App() {
           <div className="grid-two">
             <article className="panel integration-inner">
               <h3>Monthly Recovery Trend</h3>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Month</th>
-                      <th>Invoiced</th>
-                      <th>Paid</th>
-                      <th>Recovery Rate</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(!reportsOverview || !reportsOverview.monthly_recovery?.length) && (
+              {reportsOverview?.monthly_recovery?.length > 0 ? (
+                <div className="chart-container">
+                  <Bar
+                    data={{
+                      labels: reportsOverview.monthly_recovery.map((r) => r.month),
+                      datasets: [
+                        {
+                          label: "Paid",
+                          data: reportsOverview.monthly_recovery.map((r) => r.paid_amount),
+                          backgroundColor: "rgba(28, 138, 79, 0.7)",
+                          borderColor: "rgba(28, 138, 79, 1)",
+                          borderWidth: 2,
+                        },
+                        {
+                          label: "Invoiced",
+                          data: reportsOverview.monthly_recovery.map((r) => r.invoiced_amount),
+                          backgroundColor: "rgba(193, 106, 47, 0.5)",
+                          borderColor: "rgba(193, 106, 47, 1)",
+                          borderWidth: 2,
+                        },
+                      ],
+                    }}
+                    options={{
+                      responsive: true,
+                      maintainAspectRatio: true,
+                      plugins: { legend: { position: "bottom" } },
+                      scales: { y: { beginAtZero: true } },
+                    }}
+                  />
+                </div>
+              ) : (
+                <EmptyState
+                  tone="insights"
+                  title="No recovery trend yet"
+                  description="Recovery metrics appear after invoice and payment activity."
+                />
+              )}
+              {reportsOverview?.monthly_recovery?.length > 0 && (
+                <div className="table-wrap">
+                  <table className="mobile-responsive">
+                    <thead>
                       <tr>
-                        <td colSpan={4}>
-                          <EmptyState
-                            tone="insights"
-                            title="No recovery trend yet"
-                            description="Recovery metrics appear after invoice and payment activity."
-                          />
-                        </td>
+                        <th>Month</th>
+                        <th>Invoiced</th>
+                        <th>Paid</th>
+                        <th>Recovery Rate</th>
                       </tr>
-                    )}
-                    {reportsOverview?.monthly_recovery?.map((row) => (
-                      <tr key={row.month}>
-                        <td>{row.month}</td>
-                        <td>${Number(row.invoiced_amount || 0).toFixed(2)}</td>
-                        <td>${Number(row.paid_amount || 0).toFixed(2)}</td>
-                        <td>{row.recovery_rate}%</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {reportsOverview.monthly_recovery.map((row) => (
+                        <tr key={row.month}>
+                          <td data-label="Month">{row.month}</td>
+                          <td data-label="Invoiced">${Number(row.invoiced_amount || 0).toFixed(2)}</td>
+                          <td data-label="Paid">${Number(row.paid_amount || 0).toFixed(2)}</td>
+                          <td data-label="Recovery Rate">{row.recovery_rate}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </article>
 
             <article className="panel integration-inner">
@@ -1696,7 +1770,7 @@ function App() {
         <section className="panel">
           <h3>Email History</h3>
           <div className="table-wrap">
-            <table>
+            <table className="mobile-responsive">
               <thead>
                 <tr>
                   <th>Email ID</th>
@@ -1728,19 +1802,19 @@ function App() {
                 )}
                 {emailHistory.map((email) => (
                   <tr key={email.id}>
-                    <td>{email.id}</td>
-                    <td>{email.invoice_id}</td>
-                    <td>{email.status}</td>
-                    <td>{email.tone}</td>
-                    <td>{email.retry_count ?? 0}</td>
-                    <td>{email.sent_at ? new Date(email.sent_at).toLocaleString() : "-"}</td>
-                    <td>{email.delivered_at ? new Date(email.delivered_at).toLocaleString() : "-"}</td>
-                    <td>{email.opened_at ? new Date(email.opened_at).toLocaleString() : "-"}</td>
-                    <td>{email.click_count ?? 0}</td>
-                    <td>{email.clicked_at ? new Date(email.clicked_at).toLocaleString() : "-"}</td>
-                    <td>{email.tone_rationale || "-"}</td>
-                    <td>{email.failure_reason || "-"}</td>
-                    <td>
+                    <td data-label="Email ID">{email.id}</td>
+                    <td data-label="Invoice ID">{email.invoice_id}</td>
+                    <td data-label="Status">{email.status}</td>
+                    <td data-label="Tone">{email.tone}</td>
+                    <td data-label="Retries">{email.retry_count ?? 0}</td>
+                    <td data-label="Sent At">{email.sent_at ? new Date(email.sent_at).toLocaleString() : "-"}</td>
+                    <td data-label="Delivered At">{email.delivered_at ? new Date(email.delivered_at).toLocaleString() : "-"}</td>
+                    <td data-label="Opened At">{email.opened_at ? new Date(email.opened_at).toLocaleString() : "-"}</td>
+                    <td data-label="Clicks">{email.click_count ?? 0}</td>
+                    <td data-label="Clicked At">{email.clicked_at ? new Date(email.clicked_at).toLocaleString() : "-"}</td>
+                    <td data-label="Tone Rationale">{email.tone_rationale || "-"}</td>
+                    <td data-label="Failure">{email.failure_reason || "-"}</td>
+                    <td data-label="Actions">
                       {(email.status === "failed" || email.status === "approved") && (
                         <button type="button" onClick={() => handleSendNow(email.id)}>
                           Send / Retry
@@ -2227,6 +2301,17 @@ function App() {
       )}
 
       {loading && <div className="loading-pill">Refreshing data...</div>}
+
+      <div className="toast-container" role="region" aria-live="polite" aria-atomic="true">
+        {toasts.map((toast) => (
+          <Toast
+            key={toast.id}
+            message={toast.message}
+            type={toast.type}
+            onClose={() => setToasts((prev) => prev.filter((t) => t.id !== toast.id))}
+          />
+        ))}
+      </div>
     </div>
   );
 }
