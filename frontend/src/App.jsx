@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, getAuthToken, getRefreshToken, setAuthToken, setRefreshToken } from "./api";
 
 const TONES = ["friendly", "professional", "strict"];
+const DELIVERY_PROVIDERS = ["smtp", "twilio_sms", "twilio_whatsapp"];
+const TWILIO_STATUSES = ["queued", "accepted", "sending", "sent", "delivered", "read", "undelivered", "failed", "canceled"];
 
 const initialInvoiceForm = {
   customer_name: "",
@@ -154,6 +156,7 @@ function App() {
   const [emailHistory, setEmailHistory] = useState([]);
   const [latePayerInsights, setLatePayerInsights] = useState([]);
   const [customerHistory, setCustomerHistory] = useState([]);
+  const [reportsOverview, setReportsOverview] = useState(null);
   const [companies, setCompanies] = useState([]);
   const [newCompanyName, setNewCompanyName] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
@@ -174,11 +177,19 @@ function App() {
   const [integrationSource, setIntegrationSource] = useState("fake_api");
   const [integrationCount, setIntegrationCount] = useState(5);
   const [selectedTone, setSelectedTone] = useState("professional");
+  const [useSmartTone, setUseSmartTone] = useState(true);
+  const [deliveryProvider, setDeliveryProvider] = useState("smtp");
   const [selectedInvoiceId, setSelectedInvoiceId] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [activeTab, setActiveTab] = useState("dashboard");
   const [editingEmail, setEditingEmail] = useState(null);
+  const [webhookSimulator, setWebhookSimulator] = useState({
+    MessageSid: "",
+    MessageStatus: "read",
+    To: "+14155552671",
+    From: "whatsapp:+14155238886",
+  });
   const [audienceMode, setAudienceMode] = useState("ops");
   const [displayStats, setDisplayStats] = useState({
     total_invoices: 0,
@@ -322,7 +333,19 @@ function App() {
     setLoading(true);
     setMessage("");
     try {
-      const [companiesData, statsData, invoiceData, overdueData, pendingData, allEmails, insightsData, customerHistoryData, connectorData, sourceData] = await Promise.all([
+      const [
+        companiesData,
+        statsData,
+        invoiceData,
+        overdueData,
+        pendingData,
+        allEmails,
+        insightsData,
+        customerHistoryData,
+        reportsData,
+        connectorData,
+        sourceData,
+      ] = await Promise.all([
         api.getCompanies(),
         api.getStats(),
         api.getInvoices(),
@@ -331,6 +354,7 @@ function App() {
         api.getEmails(),
         api.getLatePayerInsights(),
         api.getCustomerHistory(),
+        api.getReportsOverview(),
         api.getIntegrationConnectors(),
         api.getIntegrationSources(),
       ]);
@@ -343,6 +367,7 @@ function App() {
       setEmailHistory(allEmails);
       setLatePayerInsights(insightsData);
       setCustomerHistory(customerHistoryData);
+      setReportsOverview(reportsData);
       setIntegrationConnectors(connectorData);
       setIntegrationSources(sourceData.sources || []);
 
@@ -584,6 +609,7 @@ function App() {
     setEmailHistory([]);
     setLatePayerInsights([]);
     setCustomerHistory([]);
+    setReportsOverview(null);
     setIntegrationConnectors([]);
     setCompanies([]);
     setAuditLogs([]);
@@ -600,6 +626,25 @@ function App() {
       loadData();
     } catch (error) {
       setMessage(error.message || "Unable to run queue now");
+    }
+  }
+
+  async function handleSimulateTwilioWebhook(event) {
+    event.preventDefault();
+    try {
+      const payload = {
+        MessageStatus: webhookSimulator.MessageStatus,
+        To: webhookSimulator.To || undefined,
+        From: webhookSimulator.From || undefined,
+      };
+      if (webhookSimulator.MessageSid.trim()) {
+        payload.MessageSid = webhookSimulator.MessageSid.trim();
+      }
+      await api.simulateTwilioStatus(payload);
+      setMessage(`Twilio webhook simulated: ${payload.MessageStatus}`);
+      loadData();
+    } catch (error) {
+      setMessage(error.message || "Twilio webhook simulation failed");
     }
   }
 
@@ -641,10 +686,15 @@ function App() {
     }
 
     try {
-      await api.generateEmail({
+      const payload = {
         invoice_id: Number(selectedInvoiceId),
-        tone: selectedTone,
-      });
+        auto_tone: useSmartTone,
+      };
+      if (!useSmartTone) {
+        payload.tone = selectedTone;
+      }
+
+      await api.generateEmail(payload);
       setMessage("Email draft generated and moved to pending approval.");
       loadData();
     } catch (error) {
@@ -654,8 +704,8 @@ function App() {
 
   async function handleApprove(id) {
     try {
-      await api.approveEmail(id, "smtp");
-      setMessage("Email approved and sent.");
+      await api.approveEmail(id, deliveryProvider);
+      setMessage(`Email approved and queued via ${deliveryProvider}.`);
       setEditingEmail(null);
       loadData();
     } catch (error) {
@@ -676,11 +726,20 @@ function App() {
 
   async function handleSendNow(id) {
     try {
-      await api.sendEmail(id, "smtp");
-      setMessage("Email sent successfully.");
+      await api.sendEmail(id, deliveryProvider);
+      setMessage(`Email queued via ${deliveryProvider}.`);
       loadData();
     } catch (error) {
       setMessage(error.message || "Send failed");
+    }
+  }
+
+  async function handleDownloadInvoicePdf(id) {
+    try {
+      await api.downloadInvoicePdf(id);
+      setMessage(`Invoice #${id} PDF downloaded.`);
+    } catch (error) {
+      setMessage(error.message || "Invoice PDF download failed");
     }
   }
 
@@ -1040,6 +1099,12 @@ function App() {
           Dashboard
         </button>
         <button
+          className={activeTab === "reports" ? "active" : ""}
+          onClick={() => setActiveTab("reports")}
+        >
+          Reports
+        </button>
+        <button
           className={activeTab === "customers" ? "active" : ""}
           onClick={() => setActiveTab("customers")}
         >
@@ -1252,11 +1317,32 @@ function App() {
                     className={selectedTone === tone ? "active" : ""}
                     onClick={() => setSelectedTone(tone)}
                     type="button"
+                    disabled={useSmartTone}
                   >
                     {tone}
                   </button>
                 ))}
               </div>
+
+              <label>
+                <input
+                  type="checkbox"
+                  checked={useSmartTone}
+                  onChange={(e) => setUseSmartTone(e.target.checked)}
+                />
+                Use Smart AI Tone (based on delay, amount, and payment history)
+              </label>
+
+              <label>
+                Delivery Provider
+                <select value={deliveryProvider} onChange={(e) => setDeliveryProvider(e.target.value)}>
+                  {DELIVERY_PROVIDERS.map((provider) => (
+                    <option key={provider} value={provider}>
+                      {provider}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
               <button type="button" onClick={handleGenerateEmail}>
                 Generate Email Draft
@@ -1322,6 +1408,9 @@ function App() {
                               Mark Paid
                             </button>
                           )}
+                          <button type="button" className="ghost" onClick={() => handleDownloadInvoicePdf(invoice.id)}>
+                            Download PDF
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -1498,6 +1587,111 @@ function App() {
         </section>
       )}
 
+      {activeTab === "reports" && (
+        <section className="panel">
+          <h3>Recovery & Collection Analytics</h3>
+
+          <section className="cards-grid">
+            <article className="card info">
+              <p>Monthly Recovery Rate</p>
+              <h2>{reportsOverview ? `${reportsOverview.monthly_recovery_rate}%` : "-"}</h2>
+              <small>Paid amount divided by invoiced amount for recent months.</small>
+            </article>
+            <article className="card warning">
+              <p>Average Payment Delay</p>
+              <h2>{reportsOverview ? `${reportsOverview.avg_payment_delay_days} days` : "-"}</h2>
+              <small>Average days late across paid invoices.</small>
+            </article>
+            <article className="card success">
+              <p>Email Open Rate</p>
+              <h2>{reportsOverview ? `${reportsOverview.email_open_rate}%` : "-"}</h2>
+              <small>Share of sent reminders that were opened.</small>
+            </article>
+            <article className="card">
+              <p>Email Click Rate</p>
+              <h2>{reportsOverview ? `${reportsOverview.email_click_rate}%` : "-"}</h2>
+              <small>Share of sent reminders with at least one click.</small>
+            </article>
+          </section>
+
+          <div className="grid-two">
+            <article className="panel integration-inner">
+              <h3>Monthly Recovery Trend</h3>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Month</th>
+                      <th>Invoiced</th>
+                      <th>Paid</th>
+                      <th>Recovery Rate</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(!reportsOverview || !reportsOverview.monthly_recovery?.length) && (
+                      <tr>
+                        <td colSpan={4}>
+                          <EmptyState
+                            tone="insights"
+                            title="No recovery trend yet"
+                            description="Recovery metrics appear after invoice and payment activity."
+                          />
+                        </td>
+                      </tr>
+                    )}
+                    {reportsOverview?.monthly_recovery?.map((row) => (
+                      <tr key={row.month}>
+                        <td>{row.month}</td>
+                        <td>${Number(row.invoiced_amount || 0).toFixed(2)}</td>
+                        <td>${Number(row.paid_amount || 0).toFixed(2)}</td>
+                        <td>{row.recovery_rate}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </article>
+
+            <article className="panel integration-inner">
+              <h3>Top Late Payers</h3>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Customer</th>
+                      <th>Email</th>
+                      <th>Overdue</th>
+                      <th>Overdue Rate</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(!reportsOverview || !reportsOverview.top_late_payers?.length) && (
+                      <tr>
+                        <td colSpan={4}>
+                          <EmptyState
+                            tone="insights"
+                            title="No late payer pattern yet"
+                            description="Top late payer insights will appear as customer behavior data grows."
+                          />
+                        </td>
+                      </tr>
+                    )}
+                    {reportsOverview?.top_late_payers?.map((row) => (
+                      <tr key={row.customer_email}>
+                        <td>{row.customer_name}</td>
+                        <td>{row.customer_email}</td>
+                        <td>{row.overdue_invoices}/{row.total_invoices}</td>
+                        <td>{row.overdue_rate}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+        </section>
+      )}
+
       {activeTab === "history" && (
         <section className="panel">
           <h3>Email History</h3>
@@ -1513,6 +1707,9 @@ function App() {
                   <th>Sent At</th>
                   <th>Delivered At</th>
                   <th>Opened At</th>
+                  <th>Clicks</th>
+                  <th>Clicked At</th>
+                  <th>Tone Rationale</th>
                   <th>Failure</th>
                   <th>Actions</th>
                 </tr>
@@ -1520,7 +1717,7 @@ function App() {
               <tbody>
                 {emailHistory.length === 0 && (
                   <tr>
-                    <td colSpan={10}>
+                    <td colSpan={13}>
                       <EmptyState
                         tone="history"
                         title="No delivery history yet"
@@ -1539,6 +1736,9 @@ function App() {
                     <td>{email.sent_at ? new Date(email.sent_at).toLocaleString() : "-"}</td>
                     <td>{email.delivered_at ? new Date(email.delivered_at).toLocaleString() : "-"}</td>
                     <td>{email.opened_at ? new Date(email.opened_at).toLocaleString() : "-"}</td>
+                    <td>{email.click_count ?? 0}</td>
+                    <td>{email.clicked_at ? new Date(email.clicked_at).toLocaleString() : "-"}</td>
+                    <td>{email.tone_rationale || "-"}</td>
                     <td>{email.failure_reason || "-"}</td>
                     <td>
                       {(email.status === "failed" || email.status === "approved") && (
@@ -1920,6 +2120,50 @@ function App() {
               </div>
             </article>
           </div>
+          <article className="panel">
+            <h3>Twilio Webhook Simulator</h3>
+            <form className="stack-form" onSubmit={handleSimulateTwilioWebhook}>
+              <label>
+                Message SID (optional in dry-run)
+                <input
+                  type="text"
+                  value={webhookSimulator.MessageSid}
+                  onChange={(e) => setWebhookSimulator((prev) => ({ ...prev, MessageSid: e.target.value }))}
+                  placeholder="SMXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+                />
+              </label>
+              <label>
+                Message Status
+                <select
+                  value={webhookSimulator.MessageStatus}
+                  onChange={(e) => setWebhookSimulator((prev) => ({ ...prev, MessageStatus: e.target.value }))}
+                >
+                  {TWILIO_STATUSES.map((status) => (
+                    <option key={status} value={status}>{status}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                To
+                <input
+                  type="text"
+                  value={webhookSimulator.To}
+                  onChange={(e) => setWebhookSimulator((prev) => ({ ...prev, To: e.target.value }))}
+                  placeholder="+14155552671"
+                />
+              </label>
+              <label>
+                From
+                <input
+                  type="text"
+                  value={webhookSimulator.From}
+                  onChange={(e) => setWebhookSimulator((prev) => ({ ...prev, From: e.target.value }))}
+                  placeholder="whatsapp:+14155238886"
+                />
+              </label>
+              <button type="submit">Simulate Webhook</button>
+            </form>
+          </article>
           <article className="panel">
             <h3>Audit Log</h3>
             <div className="table-wrap">

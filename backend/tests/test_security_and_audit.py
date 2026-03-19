@@ -39,6 +39,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("AUTH_RATE_LIMIT_REQUESTS", "3")
     monkeypatch.setenv("RATE_LIMIT_WINDOW_SECONDS", "60")
     monkeypatch.setenv("DRY_RUN_EMAIL", "true")
+    monkeypatch.setenv("SMS_ENABLED", "true")
+    monkeypatch.setenv("SMS_DRY_RUN", "true")
 
     for module_name in APP_MODULES:
         sys.modules.pop(module_name, None)
@@ -408,3 +410,96 @@ def test_mfa_setup_enable_and_login_requires_otp(client: TestClient):
         json={"email": "mfa_user@example.com", "password": "StrongPass123!", "otp_code": pyotp.TOTP(secret).now()},
     )
     assert login_with_otp.status_code == 200
+
+
+def test_reports_overview_and_tone_rationale_fields(client: TestClient):
+    token, _ = _signup(client, "admin_reports", "admin_reports@example.com")
+    auth = {"Authorization": f"Bearer {token}"}
+
+    inv = client.post(
+        "/invoices",
+        headers=auth,
+        json={
+            "customer_name": "Reports Customer",
+            "customer_email": "reports.customer@example.com",
+            "customer_phone": "+14155552671",
+            "amount": 5600.0,
+            "due_date": (date.today() - timedelta(days=12)).isoformat(),
+        },
+    )
+    assert inv.status_code == 200, inv.text
+
+    draft = client.post(
+        "/generate-email",
+        headers=auth,
+        json={"invoice_id": inv.json()["id"], "auto_tone": True},
+    )
+    assert draft.status_code == 200, draft.text
+    draft_body = draft.json()
+    assert draft_body["tone"] in {"friendly", "professional", "strict"}
+    assert draft_body["tone_rationale"]
+
+    reports = client.get("/reports/overview", headers=auth)
+    assert reports.status_code == 200, reports.text
+    payload = reports.json()
+    assert "monthly_recovery" in payload
+    assert "monthly_recovery_rate" in payload
+    assert "avg_payment_delay_days" in payload
+    assert "email_open_rate" in payload
+    assert "email_click_rate" in payload
+    assert "top_late_payers" in payload
+
+
+def test_twilio_webhook_simulator_updates_latest_whatsapp_reminder(client: TestClient):
+    token, _ = _signup(client, "admin_twilio", "admin_twilio@example.com")
+    auth = {"Authorization": f"Bearer {token}"}
+
+    inv = client.post(
+        "/invoices",
+        headers=auth,
+        json={
+            "customer_name": "Twilio Customer",
+            "customer_email": "twilio.customer@example.com",
+            "customer_phone": "+14155552671",
+            "amount": 1800.0,
+            "due_date": (date.today() - timedelta(days=7)).isoformat(),
+        },
+    )
+    assert inv.status_code == 200, inv.text
+
+    draft = client.post(
+        "/generate-email",
+        headers=auth,
+        json={"invoice_id": inv.json()["id"], "auto_tone": True},
+    )
+    assert draft.status_code == 200, draft.text
+    email_id = draft.json()["id"]
+
+    send_now = client.post(f"/emails/{email_id}/send", headers=auth, json={"provider": "twilio_whatsapp"})
+    assert send_now.status_code == 200, send_now.text
+
+    run_now = client.post("/jobs/run-now", headers=auth)
+    assert run_now.status_code == 200, run_now.text
+
+    emails_before = client.get("/emails", headers=auth)
+    assert emails_before.status_code == 200, emails_before.text
+    before = next(item for item in emails_before.json() if item["id"] == email_id)
+    provider_sid = before.get("provider_message_id")
+    assert provider_sid and provider_sid.startswith("SM")
+
+    webhook = client.post(
+        "/webhooks/twilio/status",
+        json={
+            "MessageSid": provider_sid,
+            "MessageStatus": "read",
+            "To": "+14155552671",
+            "From": "whatsapp:+14155238886",
+        },
+    )
+    assert webhook.status_code == 200, webhook.text
+    assert webhook.json()["accepted"] is True
+
+    emails = client.get("/emails", headers=auth)
+    assert emails.status_code == 200, emails.text
+    updated = next(item for item in emails.json() if item["id"] == email_id)
+    assert updated["status"] == "opened"

@@ -147,7 +147,8 @@ class InvoiceStatusUpdate(BaseModel):
 
 class EmailGenerateRequest(BaseModel):
     invoice_id: int
-    tone: Tone = Tone.PROFESSIONAL
+    tone: Tone | None = None
+    auto_tone: bool = True
     message_style: MessageStyle = MessageStyle.PAYMENT_REMINDER
 
 
@@ -171,6 +172,10 @@ class ReminderEmailOut(BaseModel):
     sent_at: datetime | None
     delivered_at: datetime | None
     opened_at: datetime | None
+    clicked_at: datetime | None
+    click_count: int
+    tone_rationale: str | None
+    tone_factors_json: str | None
     created_at: datetime
 
     class Config:
@@ -195,7 +200,7 @@ class LatePayerInsight(BaseModel):
 
 
 class SendEmailRequest(BaseModel):
-    provider: str = Field(default="smtp", pattern="^(smtp|gmail_api|twilio_sms)$")
+    provider: str = Field(default="smtp", pattern="^(smtp|gmail_api|sendgrid|twilio_sms|twilio_whatsapp)$")
 
 
 class PaymentConfirmRequest(BaseModel):
@@ -219,6 +224,30 @@ class CustomerHistoryOut(BaseModel):
     risk_score: float
     risk_level: str
     trend: list[CustomerHistoryTrendPoint]
+
+
+class MonthlyRecoveryPoint(BaseModel):
+    month: str
+    invoiced_amount: float
+    paid_amount: float
+    recovery_rate: float
+
+
+class TopLatePayerOut(BaseModel):
+    customer_name: str
+    customer_email: EmailStr
+    overdue_invoices: int
+    total_invoices: int
+    overdue_rate: float
+
+
+class ReportsOverviewOut(BaseModel):
+    monthly_recovery: list[MonthlyRecoveryPoint]
+    monthly_recovery_rate: float
+    avg_payment_delay_days: float
+    email_open_rate: float
+    email_click_rate: float
+    top_late_payers: list[TopLatePayerOut]
 
 
 class AuditLogOut(BaseModel):
@@ -269,6 +298,15 @@ class EmailStatusWebhookIn(BaseModel):
     status: str = Field(pattern="^(delivered|opened|failed)$")
     error_message: str | None = Field(default=None, max_length=500)
     source: str = Field(default="email_provider", min_length=2, max_length=60)
+
+
+class TwilioStatusWebhookIn(BaseModel):
+    MessageSid: str | None = Field(default=None, min_length=6, max_length=255)
+    MessageStatus: str = Field(min_length=3, max_length=60)
+    To: str | None = None
+    From: str | None = None
+    ErrorCode: str | None = None
+    ErrorMessage: str | None = None
 
 
 class WebhookAckOut(BaseModel):

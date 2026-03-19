@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import secrets
+from urllib.parse import quote
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -55,14 +56,21 @@ def send_reminder_email(db: Session, reminder: ReminderEmail, provider: str = "s
 
     tracking_base = get_settings().tracking_base_url.rstrip("/")
     tracking_pixel_url = f"{tracking_base}/emails/track/open/{reminder.tracking_token}.gif"
+    invoice_payment_link = build_payment_link(invoice)
+    tracked_payment_link = (
+        f"{tracking_base}/emails/track/click/{reminder.tracking_token}?target={quote(invoice_payment_link, safe='')}"
+    )
 
     reminder.retry_count = int(reminder.retry_count or 0) + 1
     reminder.last_attempt_at = now
 
     recipient_hint = getattr(invoice, "customer_phone", "") or invoice.customer_email
-    outbound_body = reminder.body
-    if provider == "twilio_sms":
-        outbound_body = f"Invoice #{invoice.id} overdue. Pay: {build_payment_link(invoice)}"
+    outbound_body = reminder.body.replace(invoice_payment_link, tracked_payment_link)
+    if tracked_payment_link not in outbound_body:
+        outbound_body = f"{outbound_body}\n\nPayment link: {tracked_payment_link}"
+    reminder.body = outbound_body
+    if provider in {"twilio_sms", "twilio_whatsapp"}:
+        outbound_body = f"Invoice #{invoice.id} overdue. Pay: {tracked_payment_link}"
 
     success, error_message, channel = send_reminder_via_provider(
         provider=provider,
@@ -75,7 +83,10 @@ def send_reminder_email(db: Session, reminder: ReminderEmail, provider: str = "s
     reminder.channel = channel
 
     if success:
-        reminder.provider_message_id = f"msg_{secrets.token_hex(8)}"
+        provider_sid = None
+        if error_message and error_message.startswith("sid:"):
+            provider_sid = error_message.split(":", 1)[1].strip()
+        reminder.provider_message_id = provider_sid or f"msg_{secrets.token_hex(8)}"
         reminder.status = EmailStatus.DELIVERED
         reminder.failure_reason = None
         reminder.sent_at = now
@@ -96,6 +107,22 @@ def mark_email_opened(db: Session, token: str) -> ReminderEmail | None:
 
     if reminder.opened_at is None:
         reminder.opened_at = datetime.utcnow()
+    reminder.status = EmailStatus.OPENED
+
+    db.commit()
+    db.refresh(reminder)
+    return reminder
+
+
+def mark_email_clicked(db: Session, token: str) -> ReminderEmail | None:
+    reminder = db.scalar(select(ReminderEmail).where(ReminderEmail.tracking_token == token))
+    if not reminder:
+        return None
+
+    reminder.click_count = int(reminder.click_count or 0) + 1
+    reminder.clicked_at = datetime.utcnow()
+    if reminder.opened_at is None:
+        reminder.opened_at = reminder.clicked_at
     reminder.status = EmailStatus.OPENED
 
     db.commit()

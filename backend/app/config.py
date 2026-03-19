@@ -33,6 +33,9 @@ class Settings(BaseModel):
     auto_send_without_approval: bool = os.getenv("AUTO_SEND_WITHOUT_APPROVAL", "true").lower() == "true"
     auto_reminder_tone: str = os.getenv("AUTO_REMINDER_TONE", "professional").lower()
     auto_reminder_min_days_since_last: int = int(os.getenv("AUTO_REMINDER_MIN_DAYS_SINCE_LAST", "3"))
+    auto_reminder_day_friendly: int = int(os.getenv("AUTO_REMINDER_DAY_FRIENDLY", "3"))
+    auto_reminder_day_professional: int = int(os.getenv("AUTO_REMINDER_DAY_PROFESSIONAL", "7"))
+    auto_reminder_day_strict: int = int(os.getenv("AUTO_REMINDER_DAY_STRICT", "14"))
     tracking_base_url: str = os.getenv("TRACKING_BASE_URL", "http://127.0.0.1:8000")
     max_email_retries: int = int(os.getenv("MAX_EMAIL_RETRIES", "3"))
     retry_delay_minutes: int = int(os.getenv("RETRY_DELAY_MINUTES", "15"))
@@ -42,6 +45,7 @@ class Settings(BaseModel):
     twilio_account_sid: str = os.getenv("TWILIO_ACCOUNT_SID", "")
     twilio_auth_token: str = os.getenv("TWILIO_AUTH_TOKEN", "")
     twilio_from_number: str = os.getenv("TWILIO_FROM_NUMBER", "")
+    twilio_whatsapp_from_number: str = os.getenv("TWILIO_WHATSAPP_FROM_NUMBER", "")
     webhook_shared_secret: str = os.getenv("WEBHOOK_SHARED_SECRET", "")
     redis_url: str = os.getenv("REDIS_URL", "")
     rate_limit_window_seconds: int = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))

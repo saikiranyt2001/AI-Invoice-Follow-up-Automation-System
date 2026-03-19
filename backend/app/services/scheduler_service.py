@@ -1,18 +1,32 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+import json
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.email.templates import AUTOMATION_CADENCE
 from app.models import EmailStatus, Invoice, InvoiceStatus, ReminderEmail, Tone
+from app.services.ai_service import recommend_follow_up_tone_with_context
 from app.services.email_service import create_pending_reminder, retry_failed_emails, send_reminder_email
+
+
+def _automation_cadence() -> list[tuple[int, Tone]]:
+    settings = get_settings()
+    cadence = [
+        (max(1, settings.auto_reminder_day_strict), Tone.STRICT),
+        (max(1, settings.auto_reminder_day_professional), Tone.PROFESSIONAL),
+        (max(1, settings.auto_reminder_day_friendly), Tone.FRIENDLY),
+    ]
+    # Evaluate most overdue stages first.
+    cadence.sort(key=lambda item: item[0], reverse=True)
+    return cadence
 
 
 def run_automation_cycle(db: Session) -> dict[str, int]:
     settings = get_settings()
+    cadence = _automation_cadence()
     today = date.today()
     cutoff = datetime.utcnow() - timedelta(days=max(0, settings.auto_reminder_min_days_since_last))
 
@@ -44,7 +58,7 @@ def run_automation_cycle(db: Session) -> dict[str, int]:
         }
 
         next_tone: Tone | None = None
-        for threshold_day, threshold_tone in AUTOMATION_CADENCE:
+        for threshold_day, threshold_tone in cadence:
             if overdue_days >= threshold_day and threshold_tone not in sent_tones:
                 next_tone = threshold_tone
                 break
@@ -53,7 +67,12 @@ def run_automation_cycle(db: Session) -> dict[str, int]:
             skipped_no_stage_due += 1
             continue
 
-        reminder = create_pending_reminder(db, invoice, next_tone, invoice.user_id, invoice.company_id)
+        selected_tone, rationale, factors = recommend_follow_up_tone_with_context(db, invoice, fallback_tone=next_tone)
+        reminder = create_pending_reminder(db, invoice, selected_tone, invoice.user_id, invoice.company_id)
+        reminder.tone_rationale = f"Automation: {rationale}"
+        reminder.tone_factors_json = json.dumps({**factors, "automation_baseline_tone": next_tone.value})
+        db.commit()
+        db.refresh(reminder)
         created_pending += 1
 
         if settings.auto_send_without_approval:

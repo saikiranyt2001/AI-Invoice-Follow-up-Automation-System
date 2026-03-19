@@ -129,6 +129,10 @@ class ReminderEmail(Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     opened_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    clicked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    click_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tone_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tone_factors_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     invoice: Mapped[Invoice] = relationship("Invoice", back_populates="reminders")

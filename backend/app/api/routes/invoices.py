@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,6 +13,8 @@ from app.models import Invoice, InvoiceStatus, User
 from app.schemas import InvoiceCreate, InvoiceImportOut, InvoiceOut, InvoiceStatusUpdate, PaymentConfirmRequest
 from app.security import get_current_user
 from app.services.invoice_service import is_overdue, mark_invoice_paid
+from app.services.invoice_service import build_payment_link
+from app.services.invoice_pdf_service import build_invoice_pdf
 
 router = APIRouter(tags=["invoices"])
 
@@ -151,3 +153,28 @@ def mark_invoice_paid_direct(
             details={"payment_reference": invoice.payment_reference or ""},
         )
     return invoice_to_out(invoice, db)
+
+
+@router.get("/invoices/{invoice_id}/pdf")
+def download_invoice_pdf(
+    invoice_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    active_company = get_active_company(db, current_user)
+    invoice = db.get(Invoice, invoice_id)
+    if not invoice or invoice.company_id != active_company.id:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    payment_link = build_payment_link(invoice)
+    pdf_bytes = build_invoice_pdf(invoice, payment_link, active_company.name)
+    record_audit_event(
+        db,
+        action="invoice_pdf_downloaded",
+        entity_type="invoice",
+        entity_id=invoice.id,
+        user_id=current_user.id,
+        company_id=active_company.id,
+    )
+    headers = {"Content-Disposition": f'attachment; filename="invoice_{invoice.id}.pdf"'}
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)

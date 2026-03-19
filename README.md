@@ -27,15 +27,20 @@ This system helps finance and operations teams upload invoices, track payment st
 - Payment link generation
 - Payment confirmation flow
 - AI-powered message generation
+- Smart tone recommendation with rationale (delay, amount, payment history)
 - Message styles such as `Friendly Reminder` and `Urgent Payment Notice`
 - Email delivery via SMTP
 - Gmail API email sending
+- Twilio SMS and Twilio WhatsApp reminder support
 - Follow-up scheduling for Day 3, Day 7, and Day 14
 - Background automation scheduler
 - Reminder approval workflow
 - Email status tracking: draft, approved, sent, delivered, opened, failed
+- Email engagement tracking: open and click analytics
+- Invoice PDF generation and secure download endpoint
 - Retry handling for failed reminders
 - Dashboard with invoice and follow-up KPIs
+- Reports analytics view: monthly recovery, delay, open/click rates, top late payers
 - Follow-up pipeline visibility
 - Audit logs for invoice, email, and user actions
 - Queue and operations monitoring
@@ -113,6 +118,7 @@ Customers can pay through the generated payment flow, and the system updates inv
 - automated background reminder execution
 - manual trigger endpoint
 - scheduler status endpoint
+- configurable reminder day thresholds through environment settings
 
 ### Authentication
 
@@ -180,11 +186,29 @@ Frontend URL: `http://127.0.0.1:5173`
 - `GET /invoices`
 - `GET /overdue`
 - `POST /generate-email`
+- `GET /reports/overview`
 - `GET /emails`
 - `GET /emails/pending-approvals`
+- `GET /emails/track/open/{token}.gif`
+- `GET /emails/track/click/{token}`
+- `POST /webhooks/twilio/status`
+- `GET /invoices/{invoice_id}/pdf`
 - `POST /automation/run-now`
 - `GET /automation/status`
 - `GET /audit/logs`
+
+## Environment Configuration Highlights
+
+- `AUTO_REMINDER_DAY_FRIENDLY`: default `3`
+- `AUTO_REMINDER_DAY_PROFESSIONAL`: default `7`
+- `AUTO_REMINDER_DAY_STRICT`: default `14`
+- `TRACKING_BASE_URL`: base URL for open/click tracking links
+- `TWILIO_ACCOUNT_SID`: Twilio account SID
+- `TWILIO_AUTH_TOKEN`: Twilio auth token
+- `TWILIO_FROM_NUMBER`: Twilio SMS sender number
+- `TWILIO_WHATSAPP_FROM_NUMBER`: Twilio WhatsApp sender (for example `whatsapp:+14155238886`)
+- `SMS_ENABLED`: enable SMS/WhatsApp sending path
+- `SMS_DRY_RUN`: dry-run mode for Twilio channel testing
 
 ## Notes
 

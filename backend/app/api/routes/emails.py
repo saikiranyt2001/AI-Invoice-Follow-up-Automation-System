@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -10,6 +12,7 @@ from app.models import EmailStatus, Invoice, InvoiceStatus, ReminderEmail, User
 from app.schemas import EmailGenerateRequest, ReminderEmailOut, ReminderEmailUpdate, SendEmailRequest
 from app.security import get_current_user
 from app.services.email_service import create_pending_reminder
+from app.services.ai_service import recommend_follow_up_tone_with_context
 
 router = APIRouter(tags=["emails"])
 
@@ -27,14 +30,28 @@ def generate_email(
     if invoice.status == InvoiceStatus.PAID:
         raise HTTPException(status_code=400, detail="Cannot generate reminder for a paid invoice")
 
+    selected_tone = payload.tone
+    tone_rationale = "Manual tone selected by user."
+    tone_factors: dict[str, object] = {"manual_tone": payload.tone.value if payload.tone else None}
+    if payload.auto_tone or selected_tone is None:
+        selected_tone, tone_rationale, tone_factors = recommend_follow_up_tone_with_context(
+            db,
+            invoice,
+            fallback_tone=payload.tone,
+        )
+
     reminder = create_pending_reminder(
         db,
         invoice,
-        payload.tone,
+        selected_tone,
         current_user.id,
         active_company.id,
         payload.message_style.value,
     )
+    reminder.tone_rationale = tone_rationale
+    reminder.tone_factors_json = json.dumps(tone_factors)
+    db.commit()
+    db.refresh(reminder)
     record_audit_event(
         db,
         action="reminder_generated",
@@ -42,7 +59,13 @@ def generate_email(
         entity_id=reminder.id,
         user_id=current_user.id,
         company_id=active_company.id,
-        details={"invoice_id": invoice.id, "tone": payload.tone.value, "message_style": payload.message_style.value},
+        details={
+            "invoice_id": invoice.id,
+            "tone": selected_tone.value,
+            "auto_tone": payload.auto_tone,
+            "tone_rationale": tone_rationale,
+            "message_style": payload.message_style.value,
+        },
     )
     return reminder
 

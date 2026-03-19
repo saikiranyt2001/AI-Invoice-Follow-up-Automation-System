@@ -99,6 +99,36 @@ export const api = {
   getOverdue: () => request("/overdue"),
   createInvoice: (payload) =>
     request("/invoices", { method: "POST", body: JSON.stringify(payload) }),
+  downloadInvoicePdf: async (id) => {
+    const token = getAuthToken();
+    const response = await fetch(`${API_BASE}/invoices/${id}/pdf`, {
+      method: "GET",
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+
+    if (!response.ok) {
+      let detail = "Invoice PDF download failed";
+      try {
+        const body = await response.json();
+        detail = body.detail || detail;
+      } catch {
+        // Ignore JSON parse failures and use fallback message.
+      }
+      throw new Error(detail);
+    }
+
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `invoice_${id}.pdf`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.URL.revokeObjectURL(url);
+  },
   markInvoicePaid: (id, payment_reference) =>
     request(`/invoices/${id}/mark-paid`, {
       method: "POST",
@@ -153,7 +183,9 @@ export const api = {
   getQueueStats: () => request("/jobs/stats"),
   runQueueNow: (limit = 25) => request(`/jobs/run-now?limit=${encodeURIComponent(limit)}`, { method: "POST" }),
   getOpsMetrics: () => request("/ops/metrics"),
+  simulateTwilioStatus: (payload) => request("/webhooks/twilio/status", { method: "POST", body: JSON.stringify(payload) }),
   getLatePayerInsights: () => request("/insights/late-payers"),
+  getReportsOverview: () => request("/reports/overview"),
   getCustomerHistory: () => request("/customers/history"),
   getTeamUsers: () => request("/team/users"),
   createTeamUser: (payload) => request("/team/users", { method: "POST", body: JSON.stringify(payload) }),

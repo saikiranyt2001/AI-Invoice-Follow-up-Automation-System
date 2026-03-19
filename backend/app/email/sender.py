@@ -3,10 +3,16 @@ from __future__ import annotations
 import base64
 from email.message import EmailMessage
 import smtplib
+import secrets
 
 import httpx
 
 from app.config import get_settings
+
+
+def _dry_run_twilio_sid() -> str:
+    # Twilio message SIDs look like "SM" + 32 hex chars.
+    return f"SM{secrets.token_hex(16)}"
 
 
 def send_with_smtp(
@@ -136,7 +142,7 @@ def send_with_sms(recipient_hint: str, body: str) -> tuple[bool, str | None]:
     if not settings.sms_enabled:
         return False, "SMS channel is not enabled"
     if settings.sms_dry_run:
-        return True, None
+        return True, f"sid:{_dry_run_twilio_sid()}"
     if not settings.twilio_account_sid or not settings.twilio_auth_token or not settings.twilio_from_number:
         return False, "Twilio credentials are not configured"
 
@@ -159,6 +165,54 @@ def send_with_sms(recipient_hint: str, body: str) -> tuple[bool, str | None]:
             )
             if response.status_code >= 400:
                 return False, f"Twilio send failed: {response.text}"
+            payload = response.json()
+            message_sid = str(payload.get("sid") or "")
+            if message_sid:
+                return True, f"sid:{message_sid}"
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
+
+
+def send_with_whatsapp(recipient_hint: str, body: str) -> tuple[bool, str | None]:
+    settings = get_settings()
+    if not settings.sms_enabled:
+        return False, "WhatsApp channel is not enabled"
+    if settings.sms_dry_run:
+        return True, f"sid:{_dry_run_twilio_sid()}"
+    if not settings.twilio_account_sid or not settings.twilio_auth_token:
+        return False, "Twilio credentials are not configured"
+
+    from_number = settings.twilio_whatsapp_from_number or settings.twilio_from_number
+    if not from_number:
+        return False, "Twilio WhatsApp sender is not configured"
+
+    to_number = recipient_hint.strip()
+    if not to_number:
+        return False, "Missing WhatsApp recipient"
+    if not to_number.startswith("+"):
+        return False, "WhatsApp recipient must be E.164 phone number (example: +14155552671)"
+
+    twilio_to = f"whatsapp:{to_number}"
+    twilio_from = from_number if from_number.startswith("whatsapp:") else f"whatsapp:{from_number}"
+
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            response = client.post(
+                f"https://api.twilio.com/2010-04-01/Accounts/{settings.twilio_account_sid}/Messages.json",
+                auth=(settings.twilio_account_sid, settings.twilio_auth_token),
+                data={
+                    "From": twilio_from,
+                    "To": twilio_to,
+                    "Body": body,
+                },
+            )
+            if response.status_code >= 400:
+                return False, f"Twilio WhatsApp send failed: {response.text}"
+            payload = response.json()
+            message_sid = str(payload.get("sid") or "")
+            if message_sid:
+                return True, f"sid:{message_sid}"
         return True, None
     except Exception as exc:
         return False, str(exc)
@@ -182,6 +236,9 @@ def send_reminder_via_provider(
     if provider == "twilio_sms":
         success, error = send_with_sms(recipient_hint, body)
         return success, error, "sms"
+    if provider == "twilio_whatsapp":
+        success, error = send_with_whatsapp(recipient_hint, body)
+        return success, error, "whatsapp"
 
     success, error = send_with_smtp(to_email, subject, body, tracking_pixel_url)
     return success, error, "email"

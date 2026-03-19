@@ -225,3 +225,16 @@ def run_lightweight_migrations() -> None:
 
         if "opened_at" not in reminder_columns:
             connection.execute(text("ALTER TABLE reminder_emails ADD COLUMN opened_at DATETIME"))
+
+        if "clicked_at" not in reminder_columns:
+            connection.execute(text("ALTER TABLE reminder_emails ADD COLUMN clicked_at DATETIME"))
+
+        if "click_count" not in reminder_columns:
+            connection.execute(text("ALTER TABLE reminder_emails ADD COLUMN click_count INTEGER DEFAULT 0"))
+            connection.execute(text("UPDATE reminder_emails SET click_count = 0 WHERE click_count IS NULL"))
+
+        if "tone_rationale" not in reminder_columns:
+            connection.execute(text("ALTER TABLE reminder_emails ADD COLUMN tone_rationale TEXT"))
+
+        if "tone_factors_json" not in reminder_columns:
+            connection.execute(text("ALTER TABLE reminder_emails ADD COLUMN tone_factors_json TEXT"))

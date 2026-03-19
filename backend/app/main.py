@@ -21,6 +21,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse
 from fastapi.responses import HTMLResponse
+from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -73,12 +74,15 @@ from app.schemas import (
     PaymentConfirmRequest,
     PaymentWebhookIn,
     QueueStatsOut,
+    ReportsOverviewOut,
     ReminderEmailOut,
     ReminderEmailUpdate,
     SendEmailRequest,
+    TopLatePayerOut,
     TeamMemberCreate,
     TokenOut,
     TokenRefreshRequest,
+    TwilioStatusWebhookIn,
     LogoutRequest,
     MfaEnableRequest,
     MfaSetupOut,
@@ -108,6 +112,7 @@ from app.services import (
     create_pending_reminder,
     ensure_payment_token,
     is_overdue,
+    mark_email_clicked,
     mark_email_opened,
     mark_invoice_paid,
     run_automation_cycle,
@@ -453,6 +458,44 @@ def _default_company_name(user: User) -> str:
     return f"{user.username} Company"
 
 
+def _build_late_payer_rows(invoices: list[Invoice], limit: int = 5) -> list[dict[str, object]]:
+    groups: dict[str, dict[str, object]] = {}
+    for invoice in invoices:
+        key = invoice.customer_email.strip().lower()
+        group = groups.setdefault(
+            key,
+            {
+                "customer_name": invoice.customer_name,
+                "customer_email": invoice.customer_email,
+                "total": 0,
+                "overdue": 0,
+            },
+        )
+        group["total"] = int(group["total"]) + 1
+        if invoice.status == InvoiceStatus.PENDING and invoice.due_date < date.today():
+            group["overdue"] = int(group["overdue"]) + 1
+
+    rows: list[dict[str, object]] = []
+    for data in groups.values():
+        total = int(data["total"])
+        overdue = int(data["overdue"])
+        if total == 0 or overdue == 0:
+            continue
+        overdue_rate = round((overdue / total) * 100, 1)
+        rows.append(
+            {
+                "customer_name": str(data["customer_name"]),
+                "customer_email": str(data["customer_email"]),
+                "total_invoices": total,
+                "overdue_invoices": overdue,
+                "overdue_rate": overdue_rate,
+            }
+        )
+
+    rows.sort(key=lambda item: (float(item["overdue_rate"]), int(item["overdue_invoices"])), reverse=True)
+    return rows[: max(1, limit)]
+
+
 INTEGRATION_PROVIDERS: dict[str, str] = {
     "xero": "Xero",
     "quickbooks": "QuickBooks",
@@ -635,6 +678,31 @@ def track_email_open(token: str, db: Session = Depends(get_db)):
     return Response(content=TRACKING_GIF, media_type="image/gif")
 
 
+@app.get("/emails/track/click/{token}")
+def track_email_click(token: str, target: str | None = None, db: Session = Depends(get_db)):
+    reminder = mark_email_clicked(db, token)
+    if not reminder:
+        return RedirectResponse(url="/health", status_code=302)
+
+    allowed_prefix = get_settings().payment_link_base_url.rstrip("/")
+    target = (target or "").strip()
+    if not (target.startswith("http://") or target.startswith("https://")):
+        target = allowed_prefix
+    elif not target.startswith(allowed_prefix):
+        target = allowed_prefix
+
+    _record_audit_event(
+        db,
+        action="email_link_clicked",
+        entity_type="reminder_email",
+        entity_id=reminder.id,
+        user_id=None,
+        company_id=reminder.company_id,
+        details={"target": target},
+    )
+    return RedirectResponse(url=target, status_code=302)
+
+
 @app.post("/webhooks/email/status", response_model=WebhookAckOut)
 def email_status_webhook(
     payload: EmailStatusWebhookIn,
@@ -685,6 +753,71 @@ def email_status_webhook(
             user_id=None,
             company_id=reminder.company_id,
             details={"status": payload.status, "source": payload.source},
+        )
+
+    return WebhookAckOut(accepted=True, duplicate=False, event_key=event.event_key)
+
+
+@app.post("/webhooks/twilio/status", response_model=WebhookAckOut)
+def twilio_status_webhook(payload: TwilioStatusWebhookIn, request: Request, db: Session = Depends(get_db)):
+    if not _webhook_secret_valid(request.headers.get("X-Webhook-Secret")):
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
+
+    sid_for_key = payload.MessageSid or "latest"
+    event_key = f"twilio:{sid_for_key}:{payload.MessageStatus.lower()}"
+    event, duplicate = _register_webhook_event(
+        db,
+        source="twilio",
+        event_type=f"twilio_{payload.MessageStatus.lower()}",
+        event_key=event_key,
+        payload=payload.model_dump(),
+    )
+    if duplicate:
+        return WebhookAckOut(accepted=True, duplicate=True, event_key=event.event_key)
+
+    reminder: ReminderEmail | None = None
+    if payload.MessageSid:
+        reminder = db.scalar(select(ReminderEmail).where(ReminderEmail.provider_message_id == payload.MessageSid))
+    if not reminder:
+        reminder = db.scalar(
+            select(ReminderEmail)
+            .where(ReminderEmail.channel.in_(["whatsapp", "sms"]))
+            .order_by(ReminderEmail.created_at.desc())
+        )
+    if reminder:
+        normalized = payload.MessageStatus.lower()
+        now = datetime.utcnow()
+
+        if normalized in {"queued", "accepted", "sending"}:
+            reminder.status = EmailStatus.SENT
+            if reminder.sent_at is None:
+                reminder.sent_at = now
+        elif normalized in {"sent", "delivered", "read"}:
+            reminder.status = EmailStatus.DELIVERED if normalized != "read" else EmailStatus.OPENED
+            if reminder.sent_at is None:
+                reminder.sent_at = now
+            if reminder.delivered_at is None:
+                reminder.delivered_at = now
+            if normalized == "read" and reminder.opened_at is None:
+                reminder.opened_at = now
+        elif normalized in {"undelivered", "failed", "canceled"}:
+            reminder.status = EmailStatus.FAILED
+            reminder.failure_reason = payload.ErrorMessage or payload.ErrorCode or "Twilio reported delivery failure"
+
+        db.commit()
+        db.refresh(reminder)
+        _record_audit_event(
+            db,
+            action="twilio_status_webhook_applied",
+            entity_type="reminder_email",
+            entity_id=reminder.id,
+            user_id=None,
+            company_id=reminder.company_id,
+            details={
+                "message_status": payload.MessageStatus,
+                "to": payload.To,
+                "from": payload.From,
+            },
         )
 
     return WebhookAckOut(accepted=True, duplicate=False, event_key=event.event_key)
@@ -1411,32 +1544,10 @@ def late_payer_insights(db: Session = Depends(get_db), current_user: User = Depe
     ).all()
     if not invoices:
         return []
-
-    groups: dict[str, dict[str, object]] = {}
-    for invoice in invoices:
-        key = invoice.customer_email.strip().lower()
-        group = groups.setdefault(
-            key,
-            {
-                "customer_name": invoice.customer_name,
-                "customer_email": invoice.customer_email,
-                "total": 0,
-                "overdue": 0,
-            },
-        )
-
-        group["total"] = int(group["total"]) + 1
-        if invoice.status == InvoiceStatus.PENDING and invoice.due_date < date.today():
-            group["overdue"] = int(group["overdue"]) + 1
-
+    rows = _build_late_payer_rows(invoices, limit=5)
     insights: list[LatePayerInsight] = []
-    for data in groups.values():
-        total = int(data["total"])
-        overdue = int(data["overdue"])
-        if total == 0 or overdue == 0:
-            continue
-
-        overdue_rate = round((overdue / total) * 100, 1)
+    for data in rows:
+        overdue_rate = float(data["overdue_rate"])
         if overdue_rate >= 60:
             risk_level = "high"
             insight = "Frequent payment delays. Prioritize proactive reminders and stricter follow-up."
@@ -1451,16 +1562,88 @@ def late_payer_insights(db: Session = Depends(get_db), current_user: User = Depe
             LatePayerInsight(
                 customer_name=str(data["customer_name"]),
                 customer_email=str(data["customer_email"]),
-                total_invoices=total,
-                overdue_invoices=overdue,
+                total_invoices=int(data["total_invoices"]),
+                overdue_invoices=int(data["overdue_invoices"]),
                 overdue_rate=overdue_rate,
                 risk_level=risk_level,
                 insight=insight,
             )
         )
+    return insights
 
-    insights.sort(key=lambda item: (item.overdue_rate, item.overdue_invoices), reverse=True)
-    return insights[:5]
+
+@app.get("/reports/overview", response_model=ReportsOverviewOut)
+def reports_overview(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    active_company = get_active_company(db, current_user)
+    invoices = db.scalars(
+        select(Invoice)
+        .where(Invoice.company_id == active_company.id)
+        .order_by(Invoice.due_date.asc())
+    ).all()
+
+    if not invoices:
+        return ReportsOverviewOut(
+            monthly_recovery=[],
+            monthly_recovery_rate=0.0,
+            avg_payment_delay_days=0.0,
+            email_open_rate=0.0,
+            email_click_rate=0.0,
+            top_late_payers=[],
+        )
+
+    monthly_agg: dict[str, dict[str, float]] = {}
+    paid_delay_days: list[int] = []
+
+    for item in invoices:
+        month = _month_key(item.due_date)
+        bucket = monthly_agg.setdefault(month, {"invoiced": 0.0, "paid": 0.0})
+        bucket["invoiced"] += float(item.amount)
+        if item.status == InvoiceStatus.PAID:
+            bucket["paid"] += float(item.amount)
+            if item.paid_at:
+                paid_delay_days.append(max(0, (item.paid_at.date() - item.due_date).days))
+
+    month_keys = sorted(monthly_agg.keys())[-6:]
+    monthly_recovery = []
+    total_invoiced = 0.0
+    total_paid = 0.0
+    for month in month_keys:
+        bucket = monthly_agg[month]
+        invoiced_amount = round(bucket["invoiced"], 2)
+        paid_amount = round(bucket["paid"], 2)
+        rate = round((paid_amount / invoiced_amount) * 100, 1) if invoiced_amount > 0 else 0.0
+        monthly_recovery.append(
+            {
+                "month": _month_label(month),
+                "invoiced_amount": invoiced_amount,
+                "paid_amount": paid_amount,
+                "recovery_rate": rate,
+            }
+        )
+        total_invoiced += invoiced_amount
+        total_paid += paid_amount
+
+    monthly_recovery_rate = round((total_paid / total_invoiced) * 100, 1) if total_invoiced > 0 else 0.0
+    avg_payment_delay_days = round(sum(paid_delay_days) / len(paid_delay_days), 1) if paid_delay_days else 0.0
+
+    reminder_emails = db.scalars(
+        select(ReminderEmail).where(ReminderEmail.company_id == active_company.id)
+    ).all()
+    sent_like_count = sum(1 for item in reminder_emails if item.sent_at is not None)
+    opened_count = sum(1 for item in reminder_emails if item.opened_at is not None)
+    clicked_count = sum(1 for item in reminder_emails if int(item.click_count or 0) > 0)
+    email_open_rate = round((opened_count / sent_like_count) * 100, 1) if sent_like_count else 0.0
+    email_click_rate = round((clicked_count / sent_like_count) * 100, 1) if sent_like_count else 0.0
+
+    late_rows = _build_late_payer_rows(invoices, limit=5)
+    return ReportsOverviewOut(
+        monthly_recovery=monthly_recovery,
+        monthly_recovery_rate=monthly_recovery_rate,
+        avg_payment_delay_days=avg_payment_delay_days,
+        email_open_rate=email_open_rate,
+        email_click_rate=email_click_rate,
+        top_late_payers=[TopLatePayerOut(**row) for row in late_rows],
+    )
 
 
 @app.get("/customers/history", response_model=list[CustomerHistoryOut])
