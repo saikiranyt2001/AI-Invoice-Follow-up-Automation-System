@@ -670,6 +670,26 @@ function App() {
     teamSearchTerm,
   ]);
 
+  const applyTeamPreset = useCallback((preset) => {
+    setTeamFilterMode(preset.filter);
+    setTeamSortKey(preset.sortKey);
+    setTeamSortDir(preset.sortDir);
+    setTeamSearchTerm(preset.search);
+  }, []);
+
+  const resetTeamView = useCallback(() => {
+    const defaultPreset = TEAM_VIEW_PRESETS[0];
+    applyTeamPreset(defaultPreset);
+
+    if (teamPrefsStorageKey) {
+      try {
+        localStorage.removeItem(teamPrefsStorageKey);
+      } catch {
+        // Ignore storage cleanup failures.
+      }
+    }
+  }, [applyTeamPreset, teamPrefsStorageKey]);
+
   useEffect(() => {
     if (activeTab !== "team" || !isAdmin) {
       return;
@@ -1201,26 +1221,6 @@ function App() {
     }
     return teamSortDir === "asc" ? "▲" : "▼";
   }
-
-  const applyTeamPreset = useCallback((preset) => {
-    setTeamFilterMode(preset.filter);
-    setTeamSortKey(preset.sortKey);
-    setTeamSortDir(preset.sortDir);
-    setTeamSearchTerm(preset.search);
-  }, []);
-
-  const resetTeamView = useCallback(() => {
-    const defaultPreset = TEAM_VIEW_PRESETS[0];
-    applyTeamPreset(defaultPreset);
-
-    if (teamPrefsStorageKey) {
-      try {
-        localStorage.removeItem(teamPrefsStorageKey);
-      } catch {
-        // Ignore storage cleanup failures.
-      }
-    }
-  }, [applyTeamPreset, teamPrefsStorageKey]);
 
   async function handleCreateCompany(event) {
     event.preventDefault();
